@@ -112,5 +112,45 @@ def batch(
     output_dir: Path = typer.Option(Path("./corrected"), help="Output directory"),
 ) -> None:
     """Run correct on every image in a directory."""
-    typer.echo(f"batch: {directory}")
-    raise typer.Exit(1)
+    from photolab.utils import find_images, contact_sheet_filename
+    from photolab.loader import load
+    from photolab.correct import generate_variants, save_variants, Variant
+    from photolab.contact_sheet import generate_contact_sheet
+    import numpy as np
+
+    images = find_images(directory)
+    if not images:
+        typer.echo(f"No supported images found in {directory}")
+        raise typer.Exit(1)
+
+    typer.echo(f"Found {len(images)} images in {directory}")
+
+    index_thumbnails: list[tuple[str, np.ndarray]] = []
+
+    for i, img_path in enumerate(images, 1):
+        typer.echo(f"\n[{i}/{len(images)}] Processing {img_path.name}...")
+        try:
+            photo = load(img_path)
+            source_name = img_path.stem
+            variants = generate_variants(photo)
+            save_variants(variants, source_name, output_dir)
+            sheet = generate_contact_sheet(variants, source_name)
+            sheet_path = output_dir / contact_sheet_filename(source_name)
+            sheet.save(str(sheet_path), quality=92)
+            typer.echo(f"  Contact sheet: {sheet_path.name}")
+            index_thumbnails.append((source_name, variants[1].data))
+        except Exception as e:
+            typer.echo(f"  Error: {e}", err=True)
+            continue
+
+    if index_thumbnails:
+        index_variants = [
+            Variant(number=i + 1, name=name, label=name, data=data)
+            for i, (name, data) in enumerate(index_thumbnails)
+        ]
+        index_sheet = generate_contact_sheet(index_variants, "batch_index")
+        index_path = output_dir / "batch_index_sheet.jpg"
+        index_sheet.save(str(index_path), quality=92)
+        typer.echo(f"\nMaster index: {index_path.name}")
+
+    typer.echo(f"\nBatch complete. {len(index_thumbnails)}/{len(images)} processed.")
