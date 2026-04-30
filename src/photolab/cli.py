@@ -59,8 +59,51 @@ def pick(
     output_dir: Path = typer.Option(Path("./print"), help="Output directory"),
 ) -> None:
     """Prepare a chosen variant for printing."""
-    typer.echo(f"pick: {variant_file}")
-    raise typer.Exit(1)
+    import cv2
+    from photolab.loader import load
+    from photolab.print_prep import prepare_for_print
+    from photolab.config import load_config, config_path, resolve_profile
+
+    photo = load(variant_file)
+    cfg = load_config(config_path())
+
+    paper_type = "matte"
+    icc_path = None
+    if paper:
+        icc_path, paper_type = resolve_profile(paper, cfg)
+    elif cfg.defaults.paper:
+        icc_path, paper_type = resolve_profile(cfg.defaults.paper, cfg)
+
+    actual_intent = intent or cfg.defaults.intent
+    actual_dpi = dpi or cfg.defaults.dpi
+
+    typer.echo(f"Preparing {variant_file.name} for print...")
+    typer.echo(f"  Paper type: {paper_type}, Intent: {actual_intent}, DPI: {actual_dpi}")
+
+    result = prepare_for_print(
+        photo=photo, variant_data=photo.data, paper_type=paper_type,
+        icc_profile_path=icc_path if icc_path and icc_path != paper else None,
+        intent=actual_intent, dpi=actual_dpi,
+    )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = variant_file.stem
+
+    tiff_path = output_dir / f"{stem}_print.tiff"
+    bgr = cv2.cvtColor(result.print_data, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(tiff_path), bgr)
+    typer.echo(f"  Print file: {tiff_path.name}")
+
+    proof_path = output_dir / f"{stem}_proof.jpg"
+    from PIL import Image
+    proof_img = Image.fromarray(result.proof_data, mode="RGB")
+    proof_img.save(str(proof_path), quality=92)
+    typer.echo(f"  Proof file: {proof_path.name}")
+
+    d = result.dimensions
+    typer.echo(f"  Dimensions: {d['width_inches']}\" x {d['height_inches']}\" at {d['dpi']} DPI")
+    typer.echo(f"             ({d['width_cm']} cm x {d['height_cm']} cm)")
+    typer.echo("Done.")
 
 
 @app.command()
