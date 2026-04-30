@@ -26,8 +26,28 @@ def correct(
     output_dir: Path = typer.Option(Path("./corrected"), help="Output directory"),
 ) -> None:
     """Generate correction variants and a contact sheet."""
-    typer.echo(f"correct: {file}")
-    raise typer.Exit(1)
+    from photolab.loader import load
+    from photolab.correct import generate_variants, save_variants
+    from photolab.contact_sheet import generate_contact_sheet
+    from photolab.utils import contact_sheet_filename
+
+    photo = load(file)
+    source_name = file.stem
+
+    typer.echo(f"Generating variants for {file.name}...")
+    variants = generate_variants(photo)
+
+    typer.echo(f"Saving {len(variants)} variants to {output_dir}/...")
+    paths = save_variants(variants, source_name, output_dir)
+    for p in paths:
+        typer.echo(f"  {p.name}")
+
+    typer.echo("Generating contact sheet...")
+    sheet = generate_contact_sheet(variants, source_name)
+    sheet_path = output_dir / contact_sheet_filename(source_name)
+    sheet.save(str(sheet_path), quality=92)
+    typer.echo(f"  {sheet_path.name}")
+    typer.echo("Done.")
 
 
 @app.command()
