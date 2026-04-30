@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "photolab"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "rawpy>=0.19",
+    "Pillow>=10.0",
+    "pillow-heif>=0.16",
+    "opencv-python-headless>=4.8",
+    "scikit-image>=0.21",
+    "numpy>=1.24",
+    "typer>=0.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-tmp-files>=0.0.2",
+]
+
+[project.scripts]
+photolab = "photolab.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
