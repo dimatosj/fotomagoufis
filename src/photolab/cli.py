@@ -12,8 +12,12 @@ def analyze(
     profile: Optional[str] = typer.Option(None, help="ICC profile for gamut check"),
 ) -> None:
     """Analyze a photo and print a diagnostic report."""
-    typer.echo(f"analyze: {file}")
-    raise typer.Exit(1)
+    from photolab.loader import load
+    from photolab.analyze import analyze_image
+
+    photo = load(file)
+    report = analyze_image(photo, target_profile_path=profile)
+    typer.echo(report.print_report())
 
 
 @app.command()
