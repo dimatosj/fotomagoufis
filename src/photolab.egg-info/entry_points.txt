@@ -1,2 +1,0 @@
-[console_scripts]
-photolab = photolab.cli:app
