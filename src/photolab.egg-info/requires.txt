@@ -1,0 +1,11 @@
+rawpy>=0.19
+Pillow>=10.0
+pillow-heif>=0.16
+opencv-python-headless>=4.8
+scikit-image>=0.21
+numpy>=1.24
+typer>=0.9
+
+[dev]
+pytest>=7.0
+pytest-tmp-files>=0.0.2

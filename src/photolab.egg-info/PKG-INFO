@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: photolab
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: rawpy>=0.19
+Requires-Dist: Pillow>=10.0
+Requires-Dist: pillow-heif>=0.16
+Requires-Dist: opencv-python-headless>=4.8
+Requires-Dist: scikit-image>=0.21
+Requires-Dist: numpy>=1.24
+Requires-Dist: typer>=0.9
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-tmp-files>=0.0.2; extra == "dev"

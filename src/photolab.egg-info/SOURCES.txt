@@ -1,0 +1,11 @@
+pyproject.toml
+docs/superpowers/plans/2026-04-30-photolab-implementation.md
+docs/superpowers/specs/2026-04-30-photolab-design.md
+src/photolab/__init__.py
+src/photolab/cli.py
+src/photolab.egg-info/PKG-INFO
+src/photolab.egg-info/SOURCES.txt
+src/photolab.egg-info/dependency_links.txt
+src/photolab.egg-info/entry_points.txt
+src/photolab.egg-info/requires.txt
+src/photolab.egg-info/top_level.txt
