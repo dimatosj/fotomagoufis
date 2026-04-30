@@ -6,3 +6,19 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.DS_Store
+
+# Local config
+.agent-identity
+CLAUDE.md
+dev-serve.json
+iTerm2
+
+# Photos and outputs
+*.HEIC
+*.heic
+*.RAF
+*.raf
+*.aae
+corrected/
+print/
