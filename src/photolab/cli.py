@@ -34,6 +34,8 @@ def correct(
     photo = load(file)
     source_name = file.stem
 
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     typer.echo(f"Generating variants for {file.name}...")
     variants = generate_variants(photo)
 
@@ -82,7 +84,7 @@ def pick(
 
     result = prepare_for_print(
         photo=photo, variant_data=photo.data, paper_type=paper_type,
-        icc_profile_path=icc_path if icc_path and icc_path != paper else None,
+        icc_profile_path=icc_path,
         intent=actual_intent, dpi=actual_dpi,
     )
 

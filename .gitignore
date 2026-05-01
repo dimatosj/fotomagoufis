@@ -14,6 +14,10 @@ CLAUDE.md
 dev-serve.json
 iTerm2
 
+# Internal dev docs
+docs/superpowers/
+photo-lab-spec.md
+
 # Photos and outputs
 *.HEIC
 *.heic

@@ -1,8 +1,6 @@
 """Image loader — routes to raster or RAW back-end, always returns uint16 data."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np

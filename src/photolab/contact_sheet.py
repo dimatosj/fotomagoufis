@@ -11,7 +11,21 @@ LABEL_BG = (50, 50, 50)
 LABEL_TEXT_COLOR = (255, 255, 255)
 
 
-def _uint16_to_srgb_thumbnail(data: np.ndarray, width: int) -> Image.Image:
+def _load_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    candidates = [
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (OSError, IOError):
+            continue
+    return ImageFont.load_default()
+
+
+def _uint16_to_thumbnail(data: np.ndarray, width: int) -> Image.Image:
     img_8 = (data.astype(np.float64) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
     pil = Image.fromarray(img_8, mode="RGB")
     h, w = data.shape[:2]
@@ -35,11 +49,7 @@ def generate_contact_sheet(variants: list[Variant], source_name: str) -> Image.I
 
     sheet = Image.new("RGB", (sheet_w, sheet_h), BG_COLOR)
     draw = ImageDraw.Draw(sheet)
-
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 14)
-    except (OSError, IOError):
-        font = ImageFont.load_default()
+    font = _load_font(14)
 
     for i, variant in enumerate(variants):
         col = i % COLS
@@ -47,7 +57,7 @@ def generate_contact_sheet(variants: list[Variant], source_name: str) -> Image.I
         x = PADDING + col * (CELL_WIDTH + PADDING)
         y = PADDING + row * (cell_h + PADDING)
 
-        thumb = _uint16_to_srgb_thumbnail(variant.data, CELL_WIDTH)
+        thumb = _uint16_to_thumbnail(variant.data, CELL_WIDTH)
         if thumb.size[1] != thumb_h:
             thumb = thumb.resize((CELL_WIDTH, thumb_h), Image.LANCZOS)
         sheet.paste(thumb, (x, y))

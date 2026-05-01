@@ -77,7 +77,14 @@ def _make_proof(data: np.ndarray) -> np.ndarray:
     return img_8
 
 
-def prepare_for_print(photo, variant_data, paper_type, icc_profile_path, intent, dpi):
+def prepare_for_print(
+    photo: PhotoImage,
+    variant_data: np.ndarray,
+    paper_type: str,
+    icc_profile_path: str | None,
+    intent: str,
+    dpi: int,
+) -> PrintResult:
     data = variant_data.copy()
     icc_bytes = None
 
@@ -93,8 +100,9 @@ def prepare_for_print(photo, variant_data, paper_type, icc_profile_path, intent,
             data = np.array(pil_img).astype(np.uint16) * 257
             with open(icc_profile_path, "rb") as f:
                 icc_bytes = f.read()
-        except Exception:
-            pass
+        except Exception as e:
+            import sys
+            print(f"Warning: ICC conversion failed ({e}), proceeding without color management", file=sys.stderr)
 
     params = get_sharpen_params(paper_type)
     sharpened = apply_print_sharpening(data, params)

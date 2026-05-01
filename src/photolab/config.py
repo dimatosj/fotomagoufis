@@ -120,9 +120,11 @@ def config_path() -> Path:
     return Path.home() / ".photolab" / "config.toml"
 
 
-def resolve_profile(name_or_path: str, config: PhotoLabConfig) -> tuple[str, str]:
+def resolve_profile(name_or_path: str, config: PhotoLabConfig) -> tuple[str | None, str]:
     """Resolve a profile alias or path to (icc_path, paper_type)."""
     if name_or_path in config.profiles:
         p = config.profiles[name_or_path]
         return (p.path, p.type)
-    return (name_or_path, "matte")
+    if Path(name_or_path).exists():
+        return (name_or_path, "matte")
+    return (None, name_or_path if name_or_path in ("glossy", "matte", "fine_art") else "matte")
