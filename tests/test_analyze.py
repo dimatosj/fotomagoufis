@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 from pathlib import Path
+from PIL import ImageCms
 from photolab.analyze import (
     AnalysisReport,
     analyze_image,
@@ -8,6 +9,7 @@ from photolab.analyze import (
     assess_exposure,
     detect_color_cast,
     compute_dynamic_range,
+    compute_gamut_coverage,
 )
 from photolab.loader import PhotoImage
 
@@ -105,10 +107,18 @@ class TestAnalyzeImage:
         report = analyze_image(photo)
         assert report.source_format == "tiff"
 
-    def test_gamut_check_placeholder(self, neutral_gray_uint16):
+    def test_gamut_none_without_profile(self, neutral_gray_uint16):
         photo = _make_photo(neutral_gray_uint16)
         report = analyze_image(photo)
         assert report.gamut_out_of_range_pct is None
+
+    def test_gamut_populated_with_profile(self, neutral_gray_uint16, tmp_path):
+        profile_path = tmp_path / "srgb.icc"
+        profile_path.write_bytes(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        photo = _make_photo(neutral_gray_uint16)
+        report = analyze_image(photo, target_profile_path=str(profile_path))
+        assert report.gamut_out_of_range_pct is not None
+        assert isinstance(report.gamut_out_of_range_pct, float)
 
     def test_print_report_returns_string(self, neutral_gray_uint16):
         photo = _make_photo(neutral_gray_uint16)
@@ -116,3 +126,26 @@ class TestAnalyzeImage:
         text = report.print_report()
         assert isinstance(text, str)
         assert len(text) > 0
+
+    def test_print_report_shows_gamut(self, neutral_gray_uint16, tmp_path):
+        profile_path = tmp_path / "srgb.icc"
+        profile_path.write_bytes(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        photo = _make_photo(neutral_gray_uint16)
+        report = analyze_image(photo, target_profile_path=str(profile_path))
+        text = report.print_report()
+        assert "Gamut OOG" in text
+
+
+class TestComputeGamutCoverage:
+    def test_srgb_to_srgb_is_zero(self, neutral_gray_uint16, tmp_path):
+        profile_path = tmp_path / "srgb.icc"
+        profile_path.write_bytes(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        pct = compute_gamut_coverage(neutral_gray_uint16, str(profile_path))
+        assert pct == pytest.approx(0.0, abs=1.0)
+
+    def test_returns_float(self, neutral_gray_uint16, tmp_path):
+        profile_path = tmp_path / "srgb.icc"
+        profile_path.write_bytes(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        pct = compute_gamut_coverage(neutral_gray_uint16, str(profile_path))
+        assert isinstance(pct, float)
+        assert 0.0 <= pct <= 100.0

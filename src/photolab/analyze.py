@@ -8,6 +8,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from PIL import ImageCms
 
 from photolab.loader import PhotoImage
 
@@ -158,6 +159,40 @@ def compute_dynamic_range(data: np.ndarray) -> tuple[float, float, float]:
     return utilization, shadow_clip, highlight_clip
 
 
+def compute_gamut_coverage(data: np.ndarray, profile_path: str) -> float:
+    """Compute percentage of pixels out of gamut for a target ICC profile.
+
+    Round-trips through the target profile: sRGB → target → sRGB.
+    Pixels that shift by more than 2 (in any uint8 channel) are out of gamut.
+    """
+    from PIL import Image
+
+    img_u8 = _to_uint8(data)
+    pil_img = Image.fromarray(img_u8, mode="RGB")
+
+    srgb = ImageCms.createProfile("sRGB")
+    target = ImageCms.getOpenProfile(profile_path)
+
+    to_target = ImageCms.buildTransform(
+        srgb, target, "RGB", "RGB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+    )
+    to_srgb = ImageCms.buildTransform(
+        target, srgb, "RGB", "RGB",
+        renderingIntent=ImageCms.Intent.RELATIVE_COLORIMETRIC,
+    )
+
+    converted = ImageCms.applyTransform(pil_img, to_target)
+    roundtripped = ImageCms.applyTransform(converted, to_srgb)
+
+    orig = np.array(pil_img).astype(np.int16)
+    rt = np.array(roundtripped).astype(np.int16)
+    delta = np.abs(orig - rt)
+
+    oog_mask = delta.max(axis=2) > 2
+    return float(oog_mask.sum()) / oog_mask.size * 100.0
+
+
 def _compute_aspect_ratio(width: int, height: int) -> str:
     """Return a simplified aspect ratio string like '16:9'."""
     divisor = math.gcd(width, height)
@@ -165,19 +200,9 @@ def _compute_aspect_ratio(width: int, height: int) -> str:
 
 
 def analyze_image(photo: PhotoImage, target_profile_path: str | None = None) -> AnalysisReport:
-    """Orchestrate full analysis of a PhotoImage and return an AnalysisReport.
-
-    Args:
-        photo: A PhotoImage with uint16 data of shape (H, W, 3).
-        target_profile_path: ICC profile path for gamut check (unused — placeholder).
-
-    Returns:
-        An AnalysisReport with all diagnostic fields populated.
-    """
     data = photo.data
     height, width = data.shape[:2]
 
-    # Histograms: 256 bins over the full uint16 range (0-65535)
     hist_r, _ = np.histogram(data[:, :, 0], bins=256, range=(0, 65535))
     hist_g, _ = np.histogram(data[:, :, 1], bins=256, range=(0, 65535))
     hist_b, _ = np.histogram(data[:, :, 2], bins=256, range=(0, 65535))
@@ -192,6 +217,10 @@ def analyze_image(photo: PhotoImage, target_profile_path: str | None = None) -> 
     utilization, shadow_clip, highlight_clip = compute_dynamic_range(data)
 
     camera_wb: list[float] | None = photo.metadata.get("camera_wb")
+
+    gamut_pct: float | None = None
+    if target_profile_path is not None:
+        gamut_pct = compute_gamut_coverage(data, target_profile_path)
 
     return AnalysisReport(
         width=width,
@@ -211,5 +240,5 @@ def analyze_image(photo: PhotoImage, target_profile_path: str | None = None) -> 
         histogram_b=hist_b,
         histogram_lum=hist_lum,
         camera_wb=camera_wb,
-        gamut_out_of_range_pct=None,  # placeholder for future ICC profile support
+        gamut_out_of_range_pct=gamut_pct,
     )
