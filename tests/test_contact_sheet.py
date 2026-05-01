@@ -41,3 +41,28 @@ class TestContactSheet:
         sheet = generate_contact_sheet(_make_variants(wide), "test")
         assert isinstance(sheet, Image.Image)
         assert sheet.size[0] >= 900
+
+    def test_shuffle_is_deterministic(self, neutral_gray_uint16):
+        variants = _make_variants(neutral_gray_uint16)
+        # Give each variant distinct pixel data so sheets differ if order differs
+        for i, v in enumerate(variants):
+            v.data = np.full((50, 50, 3), i * 7000, dtype=np.uint16)
+        sheet1 = generate_contact_sheet(variants, "same_name")
+        sheet2 = generate_contact_sheet(variants, "same_name")
+        assert np.array_equal(np.array(sheet1), np.array(sheet2))
+
+    def test_shuffle_varies_by_source_name(self, neutral_gray_uint16):
+        variants = _make_variants(neutral_gray_uint16)
+        for i, v in enumerate(variants):
+            v.data = np.full((50, 50, 3), i * 7000, dtype=np.uint16)
+        sheet_a = generate_contact_sheet(variants, "photo_a")
+        sheet_b = generate_contact_sheet(variants, "photo_b")
+        assert not np.array_equal(np.array(sheet_a), np.array(sheet_b))
+
+    def test_shuffle_disabled(self, neutral_gray_uint16):
+        variants = _make_variants(neutral_gray_uint16)
+        for i, v in enumerate(variants):
+            v.data = np.full((50, 50, 3), i * 7000, dtype=np.uint16)
+        sheet1 = generate_contact_sheet(variants, "a", shuffle=False)
+        sheet2 = generate_contact_sheet(variants, "b", shuffle=False)
+        assert np.array_equal(np.array(sheet1), np.array(sheet2))

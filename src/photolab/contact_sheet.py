@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from photolab.correct import Variant
@@ -34,16 +36,23 @@ def _uint16_to_thumbnail(data: np.ndarray, width: int) -> Image.Image:
     return pil
 
 
-def generate_contact_sheet(variants: list[Variant], source_name: str) -> Image.Image:
+def generate_contact_sheet(
+    variants: list[Variant], source_name: str, shuffle: bool = True,
+) -> Image.Image:
     if not variants:
         return Image.new("RGB", (CELL_WIDTH, CELL_WIDTH), BG_COLOR)
 
-    sample = variants[0].data
+    display_order = list(variants)
+    if shuffle and len(display_order) > 1:
+        rng = random.Random(source_name)
+        rng.shuffle(display_order)
+
+    sample = display_order[0].data
     h, w = sample.shape[:2]
     thumb_h = int(h * CELL_WIDTH / w)
     cell_h = thumb_h + LABEL_HEIGHT
 
-    rows = (len(variants) + COLS - 1) // COLS
+    rows = (len(display_order) + COLS - 1) // COLS
     sheet_w = COLS * CELL_WIDTH + (COLS + 1) * PADDING
     sheet_h = rows * cell_h + (rows + 1) * PADDING
 
@@ -51,7 +60,7 @@ def generate_contact_sheet(variants: list[Variant], source_name: str) -> Image.I
     draw = ImageDraw.Draw(sheet)
     font = _load_font(14)
 
-    for i, variant in enumerate(variants):
+    for i, variant in enumerate(display_order):
         col = i % COLS
         row = i // COLS
         x = PADDING + col * (CELL_WIDTH + PADDING)
