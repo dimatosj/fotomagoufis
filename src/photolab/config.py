@@ -23,10 +23,29 @@ class PhotoLabConfig:
     profiles: dict[str, ProfileConfig] = field(default_factory=dict)
 
 
-ICC_SCAN_DIRS = [
-    Path("/Library/ColorSync/Profiles"),
-    Path("/Library/Printers/Canon"),
-]
+import os
+import sys
+
+
+def _icc_scan_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    if sys.platform == "darwin":
+        dirs.append(Path("/Library/ColorSync/Profiles"))
+        dirs.append(Path("/Library/Printers"))
+        home_profiles = Path.home() / "Library" / "ColorSync" / "Profiles"
+        dirs.append(home_profiles)
+    elif sys.platform == "win32":
+        windir = os.environ.get("WINDIR", "C:\\Windows")
+        dirs.append(Path(windir) / "System32" / "spool" / "drivers" / "color")
+    else:
+        dirs.append(Path("/usr/share/color/icc"))
+        dirs.append(Path("/usr/local/share/color/icc"))
+        home_icc = Path.home() / ".local" / "share" / "color" / "icc"
+        dirs.append(home_icc)
+    return dirs
+
+
+ICC_SCAN_DIRS = _icc_scan_dirs()
 
 _GLOSSY_KEYWORDS = ["luster", "glossy", "semi-gloss", "semigloss", "photo paper plus"]
 _MATTE_KEYWORDS = ["matte", "premium matte"]
