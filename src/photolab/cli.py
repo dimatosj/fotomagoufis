@@ -143,6 +143,91 @@ def compare(
 
 
 @app.command()
+def evaluate(
+    contact_sheet: Path = typer.Argument(..., help="Contact sheet JPEG to evaluate"),
+    original: Optional[Path] = typer.Option(None, help="Original image for context"),
+    output: Path = typer.Option(None, help="Output prescription JSON path"),
+    model: str = typer.Option("claude-sonnet-4-20250514", help="Claude model to use"),
+) -> None:
+    """Evaluate a contact sheet and generate a correction prescription."""
+    from photolab.evaluate import evaluate_contact_sheet
+    import json
+
+    if output is None:
+        output = contact_sheet.parent / f"{contact_sheet.stem}_prescription.json"
+
+    typer.echo(f"Evaluating {contact_sheet.name}...")
+    original_str = str(original) if original else None
+    diagnostic, recipes = evaluate_contact_sheet(str(contact_sheet), original_str, model)
+
+    typer.echo("\n" + diagnostic)
+    typer.echo(f"\n{len(recipes)} recipes generated.")
+
+    prescription = {"diagnostic": diagnostic, "recipes": recipes}
+    with open(output, "w") as f:
+        json.dump(prescription, f, indent=2)
+    typer.echo(f"Prescription saved to {output}")
+
+
+@app.command()
+def refine(
+    file: Path = typer.Argument(..., help="Original image file"),
+    prescription: Path = typer.Argument(..., help="Prescription JSON from evaluate"),
+    output_dir: Path = typer.Option(None, help="Output directory (default: alongside variants)"),
+) -> None:
+    """Generate refined variants from an evaluation prescription."""
+    import json
+    import cv2
+    from photolab.loader import load
+    from photolab.blend import apply_recipe
+    from photolab.correct import Variant
+    from photolab.contact_sheet import generate_contact_sheet
+
+    with open(prescription) as f:
+        rx = json.load(f)
+
+    recipes = rx["recipes"]
+    if not recipes:
+        typer.echo("No recipes in prescription.")
+        raise typer.Exit(1)
+
+    photo = load(file)
+    source_name = file.stem
+
+    if output_dir is None:
+        output_dir = Path("corrected") / source_name
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    typer.echo(f"Refining {file.name} with {len(recipes)} recipes...")
+    refined_variants: list[Variant] = []
+
+    for recipe in recipes:
+        rid = recipe["recipe_id"]
+        label = recipe.get("label", rid)
+        typer.echo(f"  {rid}: {label}")
+
+        result = apply_recipe(photo.data, recipe)
+
+        tiff_path = output_dir / f"{source_name}_{rid}.tiff"
+        bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(tiff_path), bgr)
+
+        refined_variants.append(Variant(
+            number=int(rid.replace("R", "")),
+            name=rid.lower(),
+            label=f"{rid} — {label}",
+            data=result,
+        ))
+
+    sheet = generate_contact_sheet(refined_variants, f"{source_name}_refined", shuffle=False)
+    sheet_path = output_dir / f"{source_name}_refined.jpg"
+    sheet.save(str(sheet_path), quality=92)
+    typer.echo(f"  Refined contact sheet: {sheet_path.name}")
+    typer.echo("Done.")
+
+
+@app.command()
 def batch(
     directory: Path = typer.Argument(..., help="Directory of images to process"),
     output_dir: Path = typer.Option(Path("./corrected"), help="Output directory"),

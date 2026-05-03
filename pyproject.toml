@@ -22,6 +22,9 @@ dependencies = [
 Repository = "https://github.com/dimatosj/fotomagoufis"
 
 [project.optional-dependencies]
+evaluate = [
+    "anthropic>=0.39",
+]
 dev = [
     "pytest>=7.0",
     "pytest-tmp-files>=0.0.2",
