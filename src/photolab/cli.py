@@ -33,20 +33,21 @@ def correct(
 
     photo = load(file)
     source_name = file.stem
+    image_dir = output_dir / source_name
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    image_dir.mkdir(parents=True, exist_ok=True)
 
     typer.echo(f"Generating variants for {file.name}...")
     variants = generate_variants(photo)
 
-    typer.echo(f"Saving {len(variants)} variants to {output_dir}/...")
-    paths = save_variants(variants, source_name, output_dir)
+    typer.echo(f"Saving {len(variants)} variants to {image_dir}/...")
+    paths = save_variants(variants, source_name, image_dir)
     for p in paths:
         typer.echo(f"  {p.name}")
 
     typer.echo("Generating contact sheet...")
     sheet = generate_contact_sheet(variants, source_name)
-    sheet_path = output_dir / contact_sheet_filename(source_name)
+    sheet_path = image_dir / contact_sheet_filename(source_name)
     sheet.save(str(sheet_path), quality=92)
     typer.echo(f"  {sheet_path.name}")
     typer.echo("Done.")
@@ -109,6 +110,39 @@ def pick(
 
 
 @app.command()
+def compare(
+    directory: Path = typer.Argument(..., help="Directory containing variants (e.g. corrected/IMG_4194)"),
+    variants: list[int] = typer.Argument(..., help="Variant numbers to compare (e.g. 2 5 7)"),
+) -> None:
+    """Generate a contact sheet from a subset of variants."""
+    import cv2
+    import numpy as np
+    from photolab.correct import Variant
+    from photolab.contact_sheet import generate_contact_sheet
+
+    source_name = directory.name
+    found: list[Variant] = []
+
+    for v_num in variants:
+        matches = list(directory.glob(f"*_v{v_num}_*.tiff"))
+        if not matches:
+            typer.echo(f"Variant {v_num} not found in {directory}", err=True)
+            raise typer.Exit(1)
+        tiff_path = matches[0]
+        bgr = cv2.imread(str(tiff_path), cv2.IMREAD_UNCHANGED)
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        slug = tiff_path.stem.split(f"_v{v_num}_", 1)[1]
+        found.append(Variant(number=v_num, name=slug, label=slug.replace("_", " ").title(), data=rgb))
+
+    typer.echo(f"Comparing {len(found)} variants...")
+    sheet = generate_contact_sheet(found, f"{source_name}_compare", shuffle=False)
+    sheet_path = directory / f"{source_name}_compare.jpg"
+    sheet.save(str(sheet_path), quality=92)
+    typer.echo(f"  {sheet_path.name}")
+    typer.echo("Done.")
+
+
+@app.command()
 def batch(
     directory: Path = typer.Argument(..., help="Directory of images to process"),
     output_dir: Path = typer.Option(Path("./corrected"), help="Output directory"),
@@ -134,10 +168,12 @@ def batch(
         try:
             photo = load(img_path)
             source_name = img_path.stem
+            image_dir = output_dir / source_name
+            image_dir.mkdir(parents=True, exist_ok=True)
             variants = generate_variants(photo)
-            save_variants(variants, source_name, output_dir)
+            save_variants(variants, source_name, image_dir)
             sheet = generate_contact_sheet(variants, source_name)
-            sheet_path = output_dir / contact_sheet_filename(source_name)
+            sheet_path = image_dir / contact_sheet_filename(source_name)
             sheet.save(str(sheet_path), quality=92)
             typer.echo(f"  Contact sheet: {sheet_path.name}")
             index_thumbnails.append((source_name, variants[1].data))
