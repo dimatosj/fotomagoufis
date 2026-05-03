@@ -93,12 +93,20 @@ def pick(
     stem = variant_file.stem
 
     tiff_path = output_dir / f"{stem}_print.tiff"
-    bgr = cv2.cvtColor(result.print_data, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(tiff_path), bgr)
+    import cv2
+    from PIL import Image
+    if result.icc_profile_bytes:
+        # Save via OpenCV first (handles 16-bit), then re-save with Pillow to embed ICC
+        bgr = cv2.cvtColor(result.print_data, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(tiff_path), bgr)
+        img = Image.open(str(tiff_path))
+        img.save(str(tiff_path), icc_profile=result.icc_profile_bytes)
+    else:
+        bgr = cv2.cvtColor(result.print_data, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(str(tiff_path), bgr)
     typer.echo(f"  Print file: {tiff_path.name}")
 
     proof_path = output_dir / f"{stem}_proof.jpg"
-    from PIL import Image
     proof_img = Image.fromarray(result.proof_data, mode="RGB")
     proof_img.save(str(proof_path), quality=92)
     typer.echo(f"  Proof file: {proof_path.name}")
