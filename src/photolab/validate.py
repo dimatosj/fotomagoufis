@@ -56,14 +56,29 @@ def _luminance(img: np.ndarray) -> np.ndarray:
     return 0.2126 * f[:, :, 0] + 0.7152 * f[:, :, 1] + 0.0722 * f[:, :, 2]
 
 
+def _zone_mask(lum: np.ndarray, zone: Optional[str]) -> np.ndarray:
+    """Return boolean mask for a tonal zone based on luminance.
+
+    Args:
+        lum: (H, W) luminance array in [0, 1].
+        zone: "shadows", "midtones", "highlights", or None (all pixels).
+
+    Returns:
+        (H, W) boolean mask.
+    """
+    if zone is None:
+        return np.ones_like(lum, dtype=bool)
+    if zone == "shadows":
+        return lum < 0.25
+    if zone == "midtones":
+        return (lum >= 0.25) & (lum < 0.75)
+    if zone == "highlights":
+        return lum >= 0.75
+    raise ValueError(f"Unknown zone: {zone}")
+
+
 def _zone_pixels(img: np.ndarray, zone: Optional[str]) -> np.ndarray:
     """Return pixels within a tonal zone as (N, 3) float64 array.
-
-    Zones:
-        shadows:    luminance in [0, 0.25)
-        midtones:   luminance in [0.25, 0.75)
-        highlights: luminance in [0.75, 1.0]
-        None:       all pixels
 
     Returns:
         (N, 3) float64 array of pixel values (still in uint16 scale).
@@ -71,18 +86,8 @@ def _zone_pixels(img: np.ndarray, zone: Optional[str]) -> np.ndarray:
     f = img.astype(np.float64)
     if zone is None:
         return f.reshape(-1, 3)
-
-    lum = _luminance(img)
-    if zone == "shadows":
-        mask = lum < 0.25
-    elif zone == "midtones":
-        mask = (lum >= 0.25) & (lum < 0.75)
-    elif zone == "highlights":
-        mask = lum >= 0.75
-    else:
-        raise ValueError(f"Unknown zone: {zone}")
-
-    return f[mask]  # shape (N, 3)
+    mask = _zone_mask(_luminance(img), zone)
+    return f[mask]
 
 
 # ---------------------------------------------------------------------------
@@ -151,22 +156,10 @@ def validate_exposure(before: np.ndarray, after: np.ndarray, adj: dict) -> Valid
 
     before_lum = _luminance(before)
     after_lum = _luminance(after)
+    mask = _zone_mask(before_lum, zone)
 
-    if zone is not None:
-        before_full_lum = before_lum
-        if zone == "shadows":
-            mask = before_full_lum < 0.25
-        elif zone == "midtones":
-            mask = (before_full_lum >= 0.25) & (before_full_lum < 0.75)
-        elif zone == "highlights":
-            mask = before_full_lum >= 0.75
-        else:
-            mask = np.ones_like(before_full_lum, dtype=bool)
-        before_mean = before_lum[mask].mean() if mask.any() else 0.0
-        after_mean = after_lum[mask].mean() if mask.any() else 0.0
-    else:
-        before_mean = before_lum.mean()
-        after_mean = after_lum.mean()
+    before_mean = before_lum[mask].mean() if mask.any() else 0.0
+    after_mean = after_lum[mask].mean() if mask.any() else 0.0
 
     if before_mean < 1e-10:
         before_mean = 1e-10
@@ -195,21 +188,10 @@ def validate_clahe(before: np.ndarray, after: np.ndarray, adj: dict) -> Validati
 
     before_lum = _luminance(before)
     after_lum = _luminance(after)
+    mask = _zone_mask(before_lum, zone)
 
-    if zone is not None:
-        if zone == "shadows":
-            mask = before_lum < 0.25
-        elif zone == "midtones":
-            mask = (before_lum >= 0.25) & (before_lum < 0.75)
-        elif zone == "highlights":
-            mask = before_lum >= 0.75
-        else:
-            mask = np.ones_like(before_lum, dtype=bool)
-        before_std = before_lum[mask].std() if mask.any() else 0.0
-        after_std = after_lum[mask].std() if mask.any() else 0.0
-    else:
-        before_std = before_lum.std()
-        after_std = after_lum.std()
+    before_std = before_lum[mask].std() if mask.any() else 0.0
+    after_std = after_lum[mask].std() if mask.any() else 0.0
 
     if before_std < 1e-10:
         before_std = 1e-10

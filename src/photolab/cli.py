@@ -37,12 +37,20 @@ def correct(
 
     image_dir.mkdir(parents=True, exist_ok=True)
 
+    from photolab.correct import VARIANT_DEFS
+
     typer.echo(f"Generating variants for {file.name}...")
     variants, validations = generate_variants(photo)
 
     for vr in validations:
         mark = "✓" if vr.passed else "✗"
         typer.echo(f"  {mark} {vr.adjustment_type}: {vr.description}")
+
+    generated_names = {v.name for v in variants}
+    skipped = [name for _, name, _ in VARIANT_DEFS if name not in generated_names]
+
+    if skipped:
+        typer.echo(f"  Skipped: {', '.join(skipped)} (failed validation)")
 
     typer.echo(f"Saving {len(variants)} variants to {image_dir}/...")
     paths = save_variants(variants, source_name, image_dir)
@@ -54,7 +62,7 @@ def correct(
     sheet_path = image_dir / contact_sheet_filename(source_name)
     sheet.save(str(sheet_path), quality=92)
     typer.echo(f"  {sheet_path.name}")
-    typer.echo("Done.")
+    typer.echo(f"Done. {len(variants)} of {len(VARIANT_DEFS)} variants generated.")
 
 
 @app.command()

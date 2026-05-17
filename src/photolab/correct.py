@@ -5,7 +5,7 @@ import cv2
 from photolab.color import auto_levels, gray_world_wb, white_patch_wb, apply_clahe, apply_color_temp_shift, apply_ev_shift
 from photolab.loader import PhotoImage
 from photolab.utils import variant_filename
-from photolab.validate import ValidationResult, validate_adjustment
+from photolab.validate import ValidationResult, validate_adjustment, amplify_adjustment
 
 
 @dataclass
@@ -43,6 +43,13 @@ VARIANT_VALIDATION: dict[str, dict] = {
 # Variants V6-V9 are based on auto_levels, so validate against auto.
 _AUTO_BASED = {"warm", "cool", "plus_half_ev", "minus_half_ev"}
 
+_VARIANT_GENERATORS = {
+    "warm": lambda base, adj: apply_color_temp_shift(base, kelvin_delta=adj["value"]),
+    "cool": lambda base, adj: apply_color_temp_shift(base, kelvin_delta=adj["value"]),
+    "plus_half_ev": lambda base, adj: apply_ev_shift(base, ev=adj["value"]),
+    "minus_half_ev": lambda base, adj: apply_ev_shift(base, ev=adj["value"]),
+}
+
 
 def generate_variants(photo: PhotoImage) -> tuple[list[Variant], list[ValidationResult]]:
     original = photo.data
@@ -60,23 +67,37 @@ def generate_variants(photo: PhotoImage) -> tuple[list[Variant], list[Validation
         "minus_half_ev": apply_ev_shift(auto, ev=-0.5),
     }
 
-    variants = [
-        Variant(number=num, name=name, label=label, data=corrections[name])
-        for num, name, label in VARIANT_DEFS
-    ]
-
+    variants = []
     validations: list[ValidationResult] = []
-    for v in variants:
-        adj_dict = VARIANT_VALIDATION.get(v.name)
+
+    for num, name, label in VARIANT_DEFS:
+        adj_dict = VARIANT_VALIDATION.get(name)
+        data = corrections[name]
+
         if adj_dict is None:
-            # V1 (as_shot) is never validated
+            variants.append(Variant(number=num, name=name, label=label, data=data))
             continue
-        if v.name in _AUTO_BASED:
-            before = auto
+
+        before = auto if name in _AUTO_BASED else original
+        vr = validate_adjustment(before, data, adj_dict)
+
+        if vr.passed:
+            validations.append(vr)
+            variants.append(Variant(number=num, name=name, label=label, data=data))
+            continue
+
+        amplified = amplify_adjustment(adj_dict)
+        gen = _VARIANT_GENERATORS.get(name)
+        if amplified is not None and gen is not None:
+            data = gen(before, amplified)
+            vr2 = validate_adjustment(before, data, amplified)
+            if vr2.passed:
+                validations.append(vr2)
+                variants.append(Variant(number=num, name=name, label=label, data=data))
+                continue
+            validations.append(vr2)
         else:
-            before = original
-        vr = validate_adjustment(before, v.data, adj_dict)
-        validations.append(vr)
+            validations.append(vr)
 
     return variants, validations
 

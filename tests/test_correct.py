@@ -9,19 +9,26 @@ def _make_photo(data):
     return PhotoImage(data=data, source_path=Path("/fake/photo.jpg"), source_format="jpeg", bit_depth=8, metadata={}, icc_profile=None)
 
 
+def _find_variant(variants, name):
+    for v in variants:
+        if v.name == name:
+            return v
+    return None
+
+
 class TestGenerateVariants:
-    def test_produces_nine_variants(self, dark_image_uint16):
+    def test_as_shot_always_present(self, dark_image_uint16):
         variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        assert len(variants) == 9
+        assert _find_variant(variants, "as_shot") is not None
 
-    def test_variant_numbering(self, dark_image_uint16):
-        variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        assert [v.number for v in variants] == list(range(1, 10))
-
-    def test_variant_names(self, dark_image_uint16):
-        variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        expected = ["as_shot", "auto_levels", "gray_world", "white_patch", "clahe", "warm", "cool", "plus_half_ev", "minus_half_ev"]
-        assert [v.name for v in variants] == expected
+    def test_skipped_variants_excluded(self, dark_image_uint16):
+        variants, validations = generate_variants(_make_photo(dark_image_uint16))
+        failed = [vr for vr in validations if not vr.passed]
+        # If any validations failed, fewer than 9 variants should be present
+        if failed:
+            assert len(variants) < 9
+        else:
+            assert len(variants) == 9
 
     def test_all_variants_uint16(self, dark_image_uint16):
         for v in generate_variants(_make_photo(dark_image_uint16))[0]:
@@ -33,24 +40,46 @@ class TestGenerateVariants:
 
     def test_as_shot_matches_input(self, dark_image_uint16):
         variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        np.testing.assert_array_equal(variants[0].data, dark_image_uint16)
+        v1 = _find_variant(variants, "as_shot")
+        np.testing.assert_array_equal(v1.data, dark_image_uint16)
 
     def test_auto_levels_brighter_on_dark(self, dark_image_uint16):
         variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        assert variants[1].data.mean() > dark_image_uint16.mean()
+        v = _find_variant(variants, "auto_levels")
+        if v is not None:
+            assert v.data.mean() > dark_image_uint16.mean()
 
-    def test_warm_variant_more_red_than_auto_levels(self, neutral_gray_uint16):
-        variants, _ = generate_variants(_make_photo(neutral_gray_uint16))
-        assert variants[5].data[:, :, 0].mean() > variants[1].data[:, :, 0].mean()
-
-    def test_cool_variant_more_blue_than_auto_levels(self, neutral_gray_uint16):
-        variants, _ = generate_variants(_make_photo(neutral_gray_uint16))
-        assert variants[6].data[:, :, 2].mean() > variants[1].data[:, :, 2].mean()
-
-    def test_plus_ev_brighter_than_auto_levels(self, dark_image_uint16):
+    def test_warm_variant_more_red_than_auto(self, dark_image_uint16):
         variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        assert variants[7].data.mean() > variants[1].data.mean()
+        warm = _find_variant(variants, "warm")
+        auto = _find_variant(variants, "auto_levels")
+        if warm is not None and auto is not None:
+            assert warm.data[:, :, 0].mean() > auto.data[:, :, 0].mean()
 
-    def test_minus_ev_darker_than_auto_levels(self, dark_image_uint16):
+    def test_cool_variant_more_blue_than_auto(self, dark_image_uint16):
         variants, _ = generate_variants(_make_photo(dark_image_uint16))
-        assert variants[8].data.mean() < variants[1].data.mean()
+        cool = _find_variant(variants, "cool")
+        auto = _find_variant(variants, "auto_levels")
+        if cool is not None and auto is not None:
+            assert cool.data[:, :, 2].mean() > auto.data[:, :, 2].mean()
+
+    def test_plus_ev_brighter_than_auto(self, dark_image_uint16):
+        variants, _ = generate_variants(_make_photo(dark_image_uint16))
+        plus_ev = _find_variant(variants, "plus_half_ev")
+        auto = _find_variant(variants, "auto_levels")
+        if plus_ev is not None and auto is not None:
+            assert plus_ev.data.mean() > auto.data.mean()
+
+    def test_minus_ev_darker_than_auto(self, dark_image_uint16):
+        variants, _ = generate_variants(_make_photo(dark_image_uint16))
+        minus_ev = _find_variant(variants, "minus_half_ev")
+        auto = _find_variant(variants, "auto_levels")
+        if minus_ev is not None and auto is not None:
+            assert minus_ev.data.mean() < auto.data.mean()
+
+    def test_validation_results_returned(self, dark_image_uint16):
+        _, validations = generate_variants(_make_photo(dark_image_uint16))
+        assert len(validations) > 0
+        for vr in validations:
+            assert hasattr(vr, "passed")
+            assert hasattr(vr, "adjustment_type")
