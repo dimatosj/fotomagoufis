@@ -137,31 +137,68 @@ ADJUSTMENT_FNS = {
 }
 
 
-def apply_recipe(original: np.ndarray, recipe: dict) -> np.ndarray:
+def _apply_single_adjustment(
+    result: np.ndarray, adj: dict
+) -> np.ndarray:
+    """Apply one adjustment to result and return the new image."""
+    adj_type = adj["type"]
+    strength = adj.get("strength", 1.0)
+    value = adj.get("value", 0.0)
+    zone = adj.get("zone")
+
+    if adj_type == "highlight_protection":
+        threshold = adj.get("threshold", 0.75)
+        corrected = result.copy()
+        return highlight_protect(result, corrected, strength, threshold)
+    elif adj_type == "shadow_protection":
+        threshold = adj.get("threshold", 0.25)
+        corrected = result.copy()
+        return shadow_protect(result, corrected, strength, threshold)
+    elif adj_type in ADJUSTMENT_FNS:
+        corrected = ADJUSTMENT_FNS[adj_type](result, value)
+        return zone_blend(result, corrected, strength, zone)
+    else:
+        return result
+
+
+def apply_recipe(
+    original: np.ndarray, recipe: dict
+) -> tuple[np.ndarray, list]:
     """Apply a full recipe to the original image.
 
     Always starts from the original to avoid compounding artifacts.
+
+    Returns:
+        Tuple of (result image, list of ValidationResult).
     """
+    from photolab.validate import validate_adjustment, amplify_adjustment, AdjustmentFailedError
+
     base_name = recipe.get("base_variant", "v1_as_shot")
     base_fn = BASE_CORRECTIONS.get(base_name, BASE_CORRECTIONS["v1_as_shot"])
     result = base_fn(original)
+    recipe_id = recipe.get("recipe_id", "?")
+
+    validations: list = []
 
     for adj in recipe.get("adjustments", []):
-        adj_type = adj["type"]
-        strength = adj.get("strength", 1.0)
-        value = adj.get("value", 0.0)
-        zone = adj.get("zone")
+        before = result.copy()
+        result = _apply_single_adjustment(result, adj)
 
-        if adj_type == "highlight_protection":
-            threshold = adj.get("threshold", 0.75)
-            corrected = result.copy()
-            result = highlight_protect(result, corrected, strength, threshold)
-        elif adj_type == "shadow_protection":
-            threshold = adj.get("threshold", 0.25)
-            corrected = result.copy()
-            result = shadow_protect(result, corrected, strength, threshold)
-        elif adj_type in ADJUSTMENT_FNS:
-            corrected = ADJUSTMENT_FNS[adj_type](result, value)
-            result = zone_blend(result, corrected, strength, zone)
+        vr = validate_adjustment(before, result, adj)
+        if vr.passed:
+            validations.append(vr)
+            continue
 
-    return result
+        # Attempt amplified retry
+        amplified = amplify_adjustment(adj)
+        if amplified is None:
+            raise AdjustmentFailedError(recipe_id, adj, vr)
+
+        result = _apply_single_adjustment(before, amplified)
+        vr2 = validate_adjustment(before, result, amplified)
+        if vr2.passed:
+            validations.append(vr2)
+        else:
+            raise AdjustmentFailedError(recipe_id, adj, vr2)
+
+    return result, validations

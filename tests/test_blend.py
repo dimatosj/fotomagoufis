@@ -110,43 +110,77 @@ class TestZoneBlend:
 
 class TestApplyRecipe:
     def test_as_shot_base(self, mid_gray):
-        recipe = {"base_variant": "v1_as_shot", "adjustments": []}
-        result = apply_recipe(mid_gray, recipe)
+        recipe = {"recipe_id": "R1", "base_variant": "v1_as_shot", "adjustments": []}
+        result, _ = apply_recipe(mid_gray, recipe)
         assert np.array_equal(result, mid_gray)
 
     def test_exposure_adjustment(self, mid_gray):
         recipe = {
+            "recipe_id": "R1",
             "base_variant": "v1_as_shot",
             "adjustments": [{"type": "exposure", "value": 1.0, "strength": 1.0}],
         }
-        result = apply_recipe(mid_gray, recipe)
+        result, _ = apply_recipe(mid_gray, recipe)
         assert result.mean() > mid_gray.mean()
 
     def test_partial_strength(self, mid_gray):
         full = {
+            "recipe_id": "R1",
             "base_variant": "v1_as_shot",
             "adjustments": [{"type": "exposure", "value": 1.0, "strength": 1.0}],
         }
         half = {
+            "recipe_id": "R2",
             "base_variant": "v1_as_shot",
             "adjustments": [{"type": "exposure", "value": 1.0, "strength": 0.5}],
         }
-        full_result = apply_recipe(mid_gray, full)
-        half_result = apply_recipe(mid_gray, half)
+        full_result, _ = apply_recipe(mid_gray, full)
+        half_result, _ = apply_recipe(mid_gray, half)
         assert mid_gray.mean() < half_result.mean() < full_result.mean()
 
     def test_auto_levels_base(self):
         dark = np.zeros((50, 50, 3), dtype=np.uint16)
         dark[:25, :, :] = 5000
         dark[25:, :, :] = 15000
-        recipe = {"base_variant": "v2_auto_levels", "adjustments": []}
-        result = apply_recipe(dark, recipe)
+        recipe = {"recipe_id": "R1", "base_variant": "v2_auto_levels", "adjustments": []}
+        result, _ = apply_recipe(dark, recipe)
         assert (result.max() - result.min()) > (dark.max() - dark.min())
 
     def test_output_is_uint16(self, mid_gray):
         recipe = {
+            "recipe_id": "R1",
             "base_variant": "v6_warm",
             "adjustments": [{"type": "exposure", "value": 0.5, "strength": 0.8}],
         }
-        result = apply_recipe(mid_gray, recipe)
+        result, _ = apply_recipe(mid_gray, recipe)
         assert result.dtype == np.uint16
+
+
+class TestApplyRecipeValidation:
+    def test_valid_recipe_returns_validations(self, mid_gray):
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "exposure", "value": 0.5, "strength": 1.0}],
+        }
+        result, validations = apply_recipe(mid_gray, recipe)
+        assert result.dtype == np.uint16
+        assert len(validations) == 1
+        assert validations[0].passed is True
+
+    def test_no_adjustments_empty_validations(self, mid_gray):
+        recipe = {"recipe_id": "R1", "base_variant": "v1_as_shot", "adjustments": []}
+        result, validations = apply_recipe(mid_gray, recipe)
+        assert np.array_equal(result, mid_gray)
+        assert len(validations) == 0
+
+    def test_failed_validation_raises(self, mid_gray):
+        from photolab.validate import AdjustmentFailedError
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "color_temp", "value": 1.0, "strength": 1.0}],
+        }
+        with pytest.raises(AdjustmentFailedError) as exc_info:
+            apply_recipe(mid_gray, recipe)
+        assert exc_info.value.recipe_id == "R1"

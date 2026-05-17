@@ -38,7 +38,11 @@ def correct(
     image_dir.mkdir(parents=True, exist_ok=True)
 
     typer.echo(f"Generating variants for {file.name}...")
-    variants = generate_variants(photo)
+    variants, validations = generate_variants(photo)
+
+    for vr in validations:
+        mark = "✓" if vr.passed else "✗"
+        typer.echo(f"  {mark} {vr.adjustment_type}: {vr.description}")
 
     typer.echo(f"Saving {len(variants)} variants to {image_dir}/...")
     paths = save_variants(variants, source_name, image_dir)
@@ -190,6 +194,7 @@ def refine(
     from photolab.blend import apply_recipe
     from photolab.correct import Variant
     from photolab.contact_sheet import generate_contact_sheet
+    from photolab.validate import AdjustmentFailedError
 
     with open(prescription) as f:
         rx = json.load(f)
@@ -209,13 +214,23 @@ def refine(
 
     typer.echo(f"Refining {file.name} with {len(recipes)} recipes...")
     refined_variants: list[Variant] = []
+    skipped: list[str] = []
 
     for recipe in recipes:
         rid = recipe["recipe_id"]
         label = recipe.get("label", rid)
         typer.echo(f"  {rid}: {label}")
 
-        result = apply_recipe(photo.data, recipe)
+        try:
+            result, validations = apply_recipe(photo.data, recipe)
+        except AdjustmentFailedError as e:
+            typer.echo(f"    ✗ {e.result.description} — SKIPPED")
+            skipped.append(rid)
+            continue
+
+        for vr in validations:
+            mark = "✓" if vr.passed else "✗"
+            typer.echo(f"    {mark} {vr.adjustment_type}: {vr.description}")
 
         tiff_path = output_dir / f"{source_name}_{rid}.tiff"
         bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
@@ -228,10 +243,16 @@ def refine(
             data=result,
         ))
 
-    sheet = generate_contact_sheet(refined_variants, f"{source_name}_refined", shuffle=False)
-    sheet_path = output_dir / f"{source_name}_refined.jpg"
-    sheet.save(str(sheet_path), quality=92)
-    typer.echo(f"  Refined contact sheet: {sheet_path.name}")
+    if refined_variants:
+        sheet = generate_contact_sheet(refined_variants, f"{source_name}_refined", shuffle=False)
+        sheet_path = output_dir / f"{source_name}_refined.jpg"
+        sheet.save(str(sheet_path), quality=92)
+        typer.echo(f"  Refined contact sheet: {sheet_path.name}")
+
+    summary = f"{len(refined_variants)} recipe(s) applied"
+    if skipped:
+        summary += f", {len(skipped)} skipped ({', '.join(skipped)})"
+    typer.echo(summary)
     typer.echo("Done.")
 
 
@@ -263,7 +284,7 @@ def batch(
             source_name = img_path.stem
             image_dir = output_dir / source_name
             image_dir.mkdir(parents=True, exist_ok=True)
-            variants = generate_variants(photo)
+            variants, validations = generate_variants(photo)
             save_variants(variants, source_name, image_dir)
             sheet = generate_contact_sheet(variants, source_name)
             sheet_path = image_dir / contact_sheet_filename(source_name)

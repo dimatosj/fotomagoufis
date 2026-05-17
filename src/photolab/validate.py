@@ -143,19 +143,38 @@ def validate_exposure(before: np.ndarray, after: np.ndarray, adj: dict) -> Valid
     """Check mean luminance change proportional to EV.
 
     Threshold: 8% per +/-0.5 EV, scales linearly. Min threshold 1%.
+    Zone-aware: measures only within the specified tonal zone.
     """
     ev = abs(adj.get("value", 0))
+    zone = adj.get("zone")
     threshold = max(1.0, ev / 0.5 * 8.0)
 
-    before_lum = _luminance(before).mean()
-    after_lum = _luminance(after).mean()
+    before_lum = _luminance(before)
+    after_lum = _luminance(after)
 
-    if before_lum < 1e-10:
-        before_lum = 1e-10
-    change_pct = abs(after_lum - before_lum) / before_lum * 100.0
+    if zone is not None:
+        before_full_lum = before_lum
+        if zone == "shadows":
+            mask = before_full_lum < 0.25
+        elif zone == "midtones":
+            mask = (before_full_lum >= 0.25) & (before_full_lum < 0.75)
+        elif zone == "highlights":
+            mask = before_full_lum >= 0.75
+        else:
+            mask = np.ones_like(before_full_lum, dtype=bool)
+        before_mean = before_lum[mask].mean() if mask.any() else 0.0
+        after_mean = after_lum[mask].mean() if mask.any() else 0.0
+    else:
+        before_mean = before_lum.mean()
+        after_mean = after_lum.mean()
+
+    if before_mean < 1e-10:
+        before_mean = 1e-10
+    change_pct = abs(after_mean - before_mean) / before_mean * 100.0
 
     passed = change_pct >= threshold
-    description = f"luminance change {change_pct:.1f}% (min {threshold:.1f}% for {ev:.2f} EV)"
+    zone_label = f" in {zone}" if zone else ""
+    description = f"luminance change{zone_label} {change_pct:.1f}% (min {threshold:.1f}% for {ev:.2f} EV)"
 
     return ValidationResult(
         passed=passed,
@@ -167,18 +186,38 @@ def validate_exposure(before: np.ndarray, after: np.ndarray, adj: dict) -> Valid
 
 
 def validate_clahe(before: np.ndarray, after: np.ndarray, adj: dict) -> ValidationResult:
-    """Check that luminance std dev increases by >3%."""
-    threshold = 3.0
+    """Check that luminance std dev increases by >3%.
 
-    before_std = _luminance(before).std()
-    after_std = _luminance(after).std()
+    Zone-aware: measures only within the specified tonal zone.
+    """
+    threshold = 3.0
+    zone = adj.get("zone")
+
+    before_lum = _luminance(before)
+    after_lum = _luminance(after)
+
+    if zone is not None:
+        if zone == "shadows":
+            mask = before_lum < 0.25
+        elif zone == "midtones":
+            mask = (before_lum >= 0.25) & (before_lum < 0.75)
+        elif zone == "highlights":
+            mask = before_lum >= 0.75
+        else:
+            mask = np.ones_like(before_lum, dtype=bool)
+        before_std = before_lum[mask].std() if mask.any() else 0.0
+        after_std = after_lum[mask].std() if mask.any() else 0.0
+    else:
+        before_std = before_lum.std()
+        after_std = after_lum.std()
 
     if before_std < 1e-10:
         before_std = 1e-10
     change_pct = (after_std - before_std) / before_std * 100.0
 
     passed = change_pct > threshold
-    description = f"luminance std dev change {change_pct:.1f}% (min {threshold}%)"
+    zone_label = f" in {zone}" if zone else ""
+    description = f"luminance std dev change{zone_label} {change_pct:.1f}% (min {threshold}%)"
 
     return ValidationResult(
         passed=passed,
