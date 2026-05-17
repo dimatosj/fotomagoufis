@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from photolab.blend import apply_recipe
 from photolab.validate import (
     AdjustmentFailedError,
     ValidationResult,
@@ -609,3 +610,47 @@ class TestConstants:
     def test_all_types_accounted_for(self):
         all_types = VALUE_ADJUSTMENTS | STRENGTH_ADJUSTMENTS | NO_RETRY_ADJUSTMENTS
         assert all_types == set(VALIDATORS.keys())
+
+
+# ---------------------------------------------------------------------------
+# Task 7: Retry integration (blend.apply_recipe + validate)
+# ---------------------------------------------------------------------------
+
+class TestRetryIntegration:
+    def test_weak_color_temp_retries_and_succeeds(self):
+        """A color_temp of 200K is too weak at first. Amplified to 400K it should pass."""
+        img = np.full((50, 50, 3), 32768, dtype=np.uint16)
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "color_temp", "value": 200.0, "strength": 1.0}],
+        }
+        result, validations = apply_recipe(img, recipe)
+        assert len(validations) == 1
+        assert validations[0].passed is True
+
+    def test_impossibly_weak_raises(self):
+        """A color_temp of 1K can't pass even after doubling to 2K."""
+        img = np.full((50, 50, 3), 32768, dtype=np.uint16)
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "color_temp", "value": 1.0, "strength": 1.0}],
+        }
+        with pytest.raises(AdjustmentFailedError):
+            apply_recipe(img, recipe)
+
+    def test_multi_adjustment_recipe_fails_on_broken_step(self):
+        """If one adjustment in a multi-step recipe fails, the whole recipe raises."""
+        img = np.full((50, 50, 3), 32768, dtype=np.uint16)
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [
+                {"type": "exposure", "value": 0.5, "strength": 1.0},
+                {"type": "color_temp", "value": 1.0, "strength": 1.0},
+            ],
+        }
+        with pytest.raises(AdjustmentFailedError) as exc_info:
+            apply_recipe(img, recipe)
+        assert exc_info.value.result.adjustment_type == "color_temp"
