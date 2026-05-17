@@ -162,7 +162,7 @@ def apply_color_temp_shift(img: np.ndarray, kelvin_delta: float) -> np.ndarray:
     Positive kelvin_delta warms the image (more red, less blue).
     Negative kelvin_delta cools the image (less red, more blue).
 
-    factor = kelvin_delta / 500.0 * 0.02
+    factor = kelvin_delta / 500.0 * 0.08
     R *= (1 + factor)
     B *= (1 - factor)
 
@@ -174,7 +174,7 @@ def apply_color_temp_shift(img: np.ndarray, kelvin_delta: float) -> np.ndarray:
         uint16 numpy array with color temperature shift applied.
     """
     img_f = img.astype(np.float64)
-    factor = kelvin_delta / 500.0 * 0.02
+    factor = kelvin_delta / 500.0 * 0.08
 
     result = img_f.copy()
     result[:, :, 0] = img_f[:, :, 0] * (1.0 + factor)  # R
