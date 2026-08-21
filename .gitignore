@@ -8,16 +8,6 @@ build/
 .pytest_cache/
 .DS_Store
 
-# Local config
-.agent-identity
-CLAUDE.md
-dev-serve.json
-iTerm2
-
-# Internal dev docs
-docs/superpowers/
-photo-lab-spec.md
-
 # Photos and outputs
 *.HEIC
 *.heic

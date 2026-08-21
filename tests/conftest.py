@@ -1,3 +1,4 @@
+import cv2
 import numpy as np
 import pytest
 from PIL import Image
@@ -70,14 +71,11 @@ def sample_jpeg(tmp_path):
 
 @pytest.fixture
 def sample_tiff_16bit(tmp_path):
-    """Write a 16-bit TIFF to tmp_path and return its Path."""
+    """Write a genuinely 16-bit RGB TIFF (512-level gradient) and return its Path."""
     p = tmp_path / "sample.tif"
-    data = np.random.default_rng(46).integers(0, 65535, (50, 50, 3), dtype=np.uint16)
-    # For test purposes, save as regular RGB and test the upconversion path
-    img_8bit = Image.fromarray(
-        (data >> 8).astype(np.uint8), mode="RGB"
-    )
-    img_8bit.save(str(p))
+    ramp = np.linspace(0, 65535, 512).astype(np.uint16)
+    data = np.tile(np.stack([ramp, ramp, ramp], axis=-1), (64, 1, 1))
+    cv2.imwrite(str(p), cv2.cvtColor(data, cv2.COLOR_RGB2BGR))
     return p
 
 

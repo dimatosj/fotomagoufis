@@ -109,6 +109,7 @@ def save_variants(variants: list[Variant], source_name: str, output_dir: Path) -
         fname = variant_filename(source_name, v.number, v.name)
         out_path = output_dir / fname
         bgr = cv2.cvtColor(v.data, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(out_path), bgr)
+        if not cv2.imwrite(str(out_path), bgr):
+            raise OSError(f"Failed to write variant file: {out_path}")
         paths.append(out_path)
     return paths

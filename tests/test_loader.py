@@ -34,6 +34,14 @@ def test_load_8bit_upconversion_range(sample_jpeg):
     assert photo.data.dtype == np.uint16
 
 
+def test_load_16bit_tiff_preserves_depth(sample_tiff_16bit):
+    photo = load(sample_tiff_16bit)
+    assert photo.bit_depth == 16
+    assert photo.data.dtype == np.uint16
+    # An 8-bit round-trip would collapse the 512-level gradient to <=256 levels.
+    assert len(np.unique(photo.data[..., 0])) > 256
+
+
 def test_load_unsupported_format(tmp_path):
     bad_file = tmp_path / "photo.xyz"
     bad_file.write_text("not an image")

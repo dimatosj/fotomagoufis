@@ -78,10 +78,61 @@ Valid base_variant values: v1_as_shot, v2_auto_levels, v3_gray_world, v4_white_p
 - Be honest about uncertainty."""
 
 
+# Pinned model for reproducible evaluations — bump deliberately (and re-check
+# the prescriptions it writes), not implicitly via an alias.
+DEFAULT_EVAL_MODEL = "claude-sonnet-4-20250514"
+
+# Bounded wait for the vision call instead of the SDK's 10-minute default.
+EVAL_TIMEOUT_SECONDS = 120.0
+
+# Image formats the Claude API accepts directly.
+API_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+# Longest edge for images sent to the API — larger buys no extra detail,
+# just tokens and upload size.
+_API_MAX_EDGE = 1568
+
+
+def _encode_for_api(path: str) -> tuple[str, str]:
+    """Return (base64_data, media_type) for an image, in a format the API accepts.
+
+    JPEG/PNG/WebP/GIF are sent as-is. Anything else photolab can load
+    (TIFF, HEIC, RAW) is converted to JPEG in memory, downscaled to
+    _API_MAX_EDGE on the longest side.
+    """
+    suffix = Path(path).suffix.lower()
+    media_type = API_MEDIA_TYPES.get(suffix)
+    if media_type is not None:
+        with open(path, "rb") as f:
+            raw = f.read()
+        return base64.b64encode(raw).decode("utf-8"), media_type
+
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from photolab.loader import load
+
+    photo = load(Path(path))
+    img8 = (photo.data.astype(np.float64) / 65535.0 * 255.0 + 0.5).astype(np.uint8)
+    img = Image.fromarray(img8, mode="RGB")
+    img.thumbnail((_API_MAX_EDGE, _API_MAX_EDGE))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode("utf-8"), "image/jpeg"
+
+
 def evaluate_contact_sheet(
     contact_sheet_path: str,
     original_path: str | None = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = DEFAULT_EVAL_MODEL,
 ) -> tuple[str, list[dict]]:
     """Send contact sheet to Claude vision API and return (diagnostic_text, recipes).
 
@@ -89,17 +140,22 @@ def evaluate_contact_sheet(
         ImportError: if anthropic package is not installed.
         RuntimeError: if API call fails or response can't be parsed.
     """
-    import anthropic
+    try:
+        import anthropic
+    except ImportError as e:
+        raise ImportError(
+            "The evaluate command needs the anthropic SDK — "
+            'install it with: pip install -e ".[evaluate]"'
+        ) from e
 
-    with open(contact_sheet_path, "rb") as f:
-        image_data = base64.b64encode(f.read()).decode("utf-8")
+    image_data, sheet_media_type = _encode_for_api(contact_sheet_path)
 
     content: list[dict] = [
         {
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": "image/jpeg",
+                "media_type": sheet_media_type,
                 "data": image_data,
             },
         },
@@ -110,14 +166,7 @@ def evaluate_contact_sheet(
     ]
 
     if original_path:
-        with open(original_path, "rb") as f:
-            orig_data = base64.b64encode(f.read()).decode("utf-8")
-        suffix = Path(original_path).suffix.lower()
-        media_type = "image/jpeg"
-        if suffix in (".png",):
-            media_type = "image/png"
-        elif suffix in (".tiff", ".tif"):
-            media_type = "image/tiff"
+        orig_data, media_type = _encode_for_api(original_path)
         content.insert(0, {
             "type": "image",
             "source": {
@@ -131,7 +180,7 @@ def evaluate_contact_sheet(
             "text": "Above is the original image for reference. Below is the contact sheet of correction variants.",
         })
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=EVAL_TIMEOUT_SECONDS)
     response = client.messages.create(
         model=model,
         max_tokens=4096,
@@ -139,7 +188,15 @@ def evaluate_contact_sheet(
         messages=[{"role": "user", "content": content}],
     )
 
-    response_text = response.content[0].text
+    # Don't assume content[0] is text — collect the text blocks explicitly.
+    response_text = "".join(
+        block.text for block in response.content
+        if getattr(block, "type", None) == "text"
+    )
+    if not response_text:
+        raise RuntimeError(
+            f"No text content in evaluation response (stop_reason: {response.stop_reason})"
+        )
     diagnostic, recipes = parse_evaluation_response(response_text)
     return diagnostic, recipes
 

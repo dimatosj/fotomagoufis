@@ -1,3 +1,4 @@
+import io
 from dataclasses import dataclass
 from pathlib import Path
 import cv2
@@ -77,6 +78,52 @@ def _make_proof(data: np.ndarray) -> np.ndarray:
     return img_8
 
 
+# Pillow's ImageCms bindings only expose 8-bit RGB transforms, so the ICC
+# conversion is sampled on a lattice and applied by trilinear interpolation
+# in 16-bit space. The input is never quantized to 8 bits, and interpolation
+# between lattice points preserves smooth 16-bit gradation in the output.
+_LUT_SIZE = 33      # lattice points per axis
+_SLAB_ROWS = 512    # rows per interpolation chunk, caps peak memory
+
+
+def _build_icc_lut(transform) -> np.ndarray:
+    """Sample an 8-bit ImageCms transform on a 3D lattice.
+
+    Returns:
+        (n, n, n, 3) float32 array of transformed values in 0-255 scale,
+        indexed by [r, g, b] lattice coordinates.
+    """
+    n = _LUT_SIZE
+    vals = np.linspace(0, 255, n).round().astype(np.uint8)
+    r, g, b = np.meshgrid(vals, vals, vals, indexing="ij")
+    lattice = np.stack([r, g, b], axis=-1).reshape(n, n * n, 3)
+    out = np.asarray(ImageCms.applyTransform(Image.fromarray(lattice, "RGB"), transform))
+    return out.reshape(n, n, n, 3).astype(np.float32)
+
+
+def _apply_icc_lut16(data: np.ndarray, lut: np.ndarray) -> np.ndarray:
+    """Apply a sampled ICC transform to uint16 data via trilinear interpolation."""
+    n = lut.shape[0]
+    out = np.empty_like(data)
+    for y0 in range(0, data.shape[0], _SLAB_ROWS):
+        coords = data[y0:y0 + _SLAB_ROWS].astype(np.float32) * ((n - 1) / UINT16_MAX)
+        i = np.minimum(coords.astype(np.int32), n - 2)
+        t = coords - i
+        r0, g0, b0 = i[..., 0], i[..., 1], i[..., 2]
+        tr = t[..., 0][..., np.newaxis]
+        tg = t[..., 1][..., np.newaxis]
+        tb = t[..., 2][..., np.newaxis]
+        c00 = lut[r0, g0, b0] * (1 - tr) + lut[r0 + 1, g0, b0] * tr
+        c10 = lut[r0, g0 + 1, b0] * (1 - tr) + lut[r0 + 1, g0 + 1, b0] * tr
+        c01 = lut[r0, g0, b0 + 1] * (1 - tr) + lut[r0 + 1, g0, b0 + 1] * tr
+        c11 = lut[r0, g0 + 1, b0 + 1] * (1 - tr) + lut[r0 + 1, g0 + 1, b0 + 1] * tr
+        c0 = c00 * (1 - tg) + c10 * tg
+        c1 = c01 * (1 - tg) + c11 * tg
+        c = c0 * (1 - tb) + c1 * tb
+        out[y0:y0 + _SLAB_ROWS] = np.clip(c * 257.0, 0, UINT16_MAX).astype(np.uint16)
+    return out
+
+
 def prepare_for_print(
     photo: PhotoImage,
     variant_data: np.ndarray,
@@ -85,19 +132,22 @@ def prepare_for_print(
     intent: str,
     dpi: int,
 ) -> PrintResult:
+    if intent not in INTENT_MAP:
+        valid = ", ".join(sorted(INTENT_MAP))
+        raise ValueError(f"Unknown rendering intent {intent!r} — valid intents: {valid}")
+
     data = variant_data.copy()
     icc_bytes = None
 
     if icc_profile_path and Path(icc_profile_path).exists():
         try:
             target_profile = ImageCms.getOpenProfile(icc_profile_path)
-            source_profile = ImageCms.createProfile("sRGB")
-            cms_intent = INTENT_MAP.get(intent, ImageCms.Intent.PERCEPTUAL)
-            img_8 = (data.astype(np.float64) / UINT16_MAX * 255.0).clip(0, 255).astype(np.uint8)
-            pil_img = Image.fromarray(img_8, mode="RGB")
-            transform = ImageCms.buildTransform(source_profile, target_profile, "RGB", "RGB", renderingIntent=cms_intent)
-            pil_img = ImageCms.applyTransform(pil_img, transform)
-            data = np.array(pil_img).astype(np.uint16) * 257
+            if photo.icc_profile:
+                source_profile = ImageCms.getOpenProfile(io.BytesIO(photo.icc_profile))
+            else:
+                source_profile = ImageCms.createProfile("sRGB")
+            transform = ImageCms.buildTransform(source_profile, target_profile, "RGB", "RGB", renderingIntent=INTENT_MAP[intent])
+            data = _apply_icc_lut16(data, _build_icc_lut(transform))
             with open(icc_profile_path, "rb") as f:
                 icc_bytes = f.read()
         except Exception as e:

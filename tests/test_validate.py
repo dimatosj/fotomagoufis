@@ -35,24 +35,10 @@ from photolab.color import (
 
 
 # ---------------------------------------------------------------------------
-# Task 1: Data structures and zone helpers
+# Data structures and zone helpers
 # ---------------------------------------------------------------------------
 
 class TestValidationResult:
-    def test_dataclass_fields(self):
-        r = ValidationResult(
-            passed=True,
-            adjustment_type="exposure",
-            measured=12.3,
-            threshold=8.0,
-            description="luminance change 12.3% (min 8.0%)",
-        )
-        assert r.passed is True
-        assert r.adjustment_type == "exposure"
-        assert r.measured == 12.3
-        assert r.threshold == 8.0
-        assert "12.3%" in r.description
-
     def test_failed_result(self):
         r = ValidationResult(
             passed=False,
@@ -165,7 +151,7 @@ class TestZonePixels:
 
 
 # ---------------------------------------------------------------------------
-# Task 2: color_temp validator
+# color_temp validator
 # ---------------------------------------------------------------------------
 
 class TestValidateColorTemp:
@@ -227,7 +213,7 @@ class TestValidateColorTemp:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: exposure validator
+# exposure validator
 # ---------------------------------------------------------------------------
 
 class TestValidateExposure:
@@ -279,7 +265,7 @@ class TestValidateExposure:
 
 
 # ---------------------------------------------------------------------------
-# Task 4: clahe, auto_levels, gray_world, white_patch validators
+# clahe, auto_levels, gray_world, white_patch validators
 # ---------------------------------------------------------------------------
 
 class TestValidateClahe:
@@ -384,92 +370,82 @@ class TestValidateWhitePatch:
 
 
 # ---------------------------------------------------------------------------
-# Task 5: highlight_protection and shadow_protection validators
+# highlight_protection and shadow_protection validators
 # ---------------------------------------------------------------------------
 
 class TestValidateHighlightProtection:
-    def test_no_hot_pixels_passes(self, neutral_gray_uint16):
-        # No pixels above 0.98 luminance
+    def test_no_pixels_in_zone_fails(self, neutral_gray_uint16):
+        # Neutral gray (~0.5 lum) has nothing above the 0.75 default zone
         result = validate_highlight_protection(
             neutral_gray_uint16, neutral_gray_uint16.copy(),
             {"type": "highlight_protection"},
         )
-        assert result.passed is True
-        assert "no hot pixels" in result.description
+        assert result.passed is False
+        assert "no pixels above" in result.description
 
-    def test_clipping_fails(self):
-        # Create image with hot pixels that get brighter
+    def test_no_op_fails(self):
+        # Hot pixels exist but protection changed nothing — a no-op must fail
         before = np.full((10, 10, 3), 64500, dtype=np.uint16)  # lum ~0.984
-        after = np.full((10, 10, 3), 65535, dtype=np.uint16)   # lum = 1.0
         result = validate_highlight_protection(
-            before, after, {"type": "highlight_protection"}
+            before, before.copy(), {"type": "highlight_protection", "strength": 0.7}
         )
         assert result.passed is False
-        assert result.measured > 0
+        assert result.measured == 0.0
 
-    def test_highlight_maintained_passes(self):
-        # Hot pixels that don't increase
-        before = np.full((10, 10, 3), 65000, dtype=np.uint16)
-        after = np.full((10, 10, 3), 64500, dtype=np.uint16)  # slightly decreased
+    def test_measurable_recovery_passes(self):
+        # Blown highlights pulled back down measurably
+        before = np.full((10, 10, 3), 65535, dtype=np.uint16)  # clipped
+        after = np.full((10, 10, 3), 58000, dtype=np.uint16)   # recovered
         result = validate_highlight_protection(
-            before, after, {"type": "highlight_protection"}
+            before, after, {"type": "highlight_protection", "strength": 0.7}
         )
         assert result.passed is True
+        assert result.measured > result.threshold
 
-    def test_bright_image_with_protection(self, bright_image_uint16):
-        # bright_image has values 55000-65535, some should be > 0.98 lum
-        after = bright_image_uint16.copy()
-        # Reduce hot pixels slightly
-        lum = _luminance(bright_image_uint16)
-        mask = lum > 0.98
-        if mask.any():
-            after[mask] = (after[mask].astype(np.float64) * 0.98).astype(np.uint16)
-            result = validate_highlight_protection(
-                bright_image_uint16, after, {"type": "highlight_protection"}
-            )
-            assert result.passed is True
+    def test_zone_threshold_respected(self):
+        # Pixels sit at ~0.6 lum: in zone for threshold 0.5, out for default 0.75
+        before = np.full((10, 10, 3), 40000, dtype=np.uint16)
+        after = np.full((10, 10, 3), 36000, dtype=np.uint16)
+        in_zone = validate_highlight_protection(
+            before, after, {"type": "highlight_protection", "threshold": 0.5}
+        )
+        assert in_zone.passed is True
+        out_of_zone = validate_highlight_protection(
+            before, after, {"type": "highlight_protection"}
+        )
+        assert out_of_zone.passed is False
 
 
 class TestValidateShadowProtection:
-    def test_no_dark_pixels_passes(self, neutral_gray_uint16):
+    def test_no_pixels_in_zone_fails(self, neutral_gray_uint16):
         result = validate_shadow_protection(
             neutral_gray_uint16, neutral_gray_uint16.copy(),
             {"type": "shadow_protection"},
         )
-        assert result.passed is True
-        assert "no dark pixels" in result.description
+        assert result.passed is False
+        assert "no pixels below" in result.description
 
-    def test_shadow_increase_fails(self):
-        # Dark pixels that get brighter (increase)
+    def test_no_op_fails(self):
         before = np.full((10, 10, 3), 500, dtype=np.uint16)  # very dark
-        after = np.full((10, 10, 3), 5000, dtype=np.uint16)  # brighter
         result = validate_shadow_protection(
-            before, after, {"type": "shadow_protection"}
+            before, before.copy(), {"type": "shadow_protection", "strength": 0.5}
         )
         assert result.passed is False
-        assert result.measured > 0
+        assert result.measured == 0.0
 
-    def test_shadow_maintained_passes(self):
-        # Dark pixels stay the same
+    def test_measurable_recovery_passes(self):
+        # Crushed shadows restored measurably (toward the recipe base)
         before = np.full((10, 10, 3), 500, dtype=np.uint16)
-        after = np.full((10, 10, 3), 500, dtype=np.uint16)
+        after = np.full((10, 10, 3), 5000, dtype=np.uint16)
         result = validate_shadow_protection(
-            before, after, {"type": "shadow_protection"}
+            before, after, {"type": "shadow_protection", "strength": 0.5}
         )
         assert result.passed is True
-
-    def test_shadow_decreased_passes(self):
-        # Dark pixels get slightly darker (decrease is OK)
-        before = np.full((10, 10, 3), 500, dtype=np.uint16)
-        after = np.full((10, 10, 3), 300, dtype=np.uint16)
-        result = validate_shadow_protection(
-            before, after, {"type": "shadow_protection"}
-        )
-        assert result.passed is True
+        assert result.measured > result.threshold
 
 
 # ---------------------------------------------------------------------------
-# Task 6: Dispatcher and amplify helper
+# Dispatcher and amplify helper
 # ---------------------------------------------------------------------------
 
 class TestValidateAdjustment:
@@ -613,7 +589,7 @@ class TestConstants:
 
 
 # ---------------------------------------------------------------------------
-# Task 7: Retry integration (blend.apply_recipe + validate)
+# Retry integration (blend.apply_recipe + validate)
 # ---------------------------------------------------------------------------
 
 class TestRetryIntegration:

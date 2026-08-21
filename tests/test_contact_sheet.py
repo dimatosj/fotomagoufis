@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from PIL import Image
 from photolab.correct import Variant
 from photolab.contact_sheet import generate_contact_sheet

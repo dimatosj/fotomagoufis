@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
 import numpy as np
 import rawpy
 from PIL import Image
@@ -27,26 +28,37 @@ def _load_raster(path: Path, fmt: str) -> PhotoImage:
         import pillow_heif
         pillow_heif.register_heif_opener()
 
-    img = Image.open(path).convert("RGB")
+    img = Image.open(path)
 
-    # Extract ICC profile before converting
+    # Extract ICC profile and EXIF from the PIL open (metadata only — pixels
+    # for TIFF/PNG are read below via cv2, because PIL's convert("RGB")
+    # collapses 16-bit-per-channel images to 8 bits).
     icc_profile: bytes | None = img.info.get("icc_profile")
-
-    # Determine native bit depth
-    arr = np.array(img)
-    if arr.dtype == np.uint8:
-        bit_depth = 8
-        data = arr.astype(np.uint16) * 257  # scale 0-255 → 0-65535
-    else:
-        # Already 16-bit (e.g., 16-bit TIFF/PNG)
-        bit_depth = 16
-        data = arr.astype(np.uint16)
-
-    # Extract EXIF metadata if available
     metadata: dict = {}
     exif_data = img.info.get("exif")
     if exif_data is not None:
         metadata["exif_raw"] = exif_data
+
+    arr = None
+    if fmt in ("tiff", "png"):
+        arr = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+        if arr is not None:
+            if arr.ndim == 2:
+                arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+            elif arr.shape[2] == 4:
+                arr = cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+            arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
+
+    if arr is None:
+        # 8-bit formats (JPEG, HEIC, ...) and anything cv2 can't decode.
+        arr = np.array(img.convert("RGB"))
+
+    if arr.dtype == np.uint8:
+        bit_depth = 8
+        data = arr.astype(np.uint16) * 257  # scale 0-255 → 0-65535
+    else:
+        bit_depth = 16
+        data = arr.astype(np.uint16)
 
     return PhotoImage(
         data=data,

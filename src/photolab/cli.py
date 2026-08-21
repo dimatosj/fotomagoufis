@@ -1,7 +1,10 @@
+import re
 from pathlib import Path
 from typing import Optional
 
 import typer
+
+from photolab.evaluate import DEFAULT_EVAL_MODEL
 
 app = typer.Typer(help="Photo Lab — headless photo editing and print preparation.")
 
@@ -27,7 +30,7 @@ def correct(
 ) -> None:
     """Generate correction variants and a contact sheet."""
     from photolab.loader import load
-    from photolab.correct import generate_variants, save_variants
+    from photolab.correct import generate_variants, save_variants, VARIANT_DEFS
     from photolab.contact_sheet import generate_contact_sheet
     from photolab.utils import contact_sheet_filename
 
@@ -36,8 +39,6 @@ def correct(
     image_dir = output_dir / source_name
 
     image_dir.mkdir(parents=True, exist_ok=True)
-
-    from photolab.correct import VARIANT_DEFS
 
     typer.echo(f"Generating variants for {file.name}...")
     variants, validations = generate_variants(photo)
@@ -69,14 +70,13 @@ def correct(
 def pick(
     variant_file: Path = typer.Argument(..., help="Variant TIFF to prepare for print"),
     paper: Optional[str] = typer.Option(None, help="ICC profile alias or path"),
-    intent: str = typer.Option("perceptual", help="Rendering intent: perceptual or relative-colorimetric"),
-    dpi: int = typer.Option(300, help="Print DPI"),
+    intent: Optional[str] = typer.Option(None, help="Rendering intent: perceptual or relative-colorimetric (default: config value)"),
+    dpi: Optional[int] = typer.Option(None, help="Print DPI (default: config value)"),
     output_dir: Path = typer.Option(Path("./print"), help="Output directory"),
 ) -> None:
     """Prepare a chosen variant for printing."""
-    import cv2
     from photolab.loader import load
-    from photolab.print_prep import prepare_for_print
+    from photolab.print_prep import prepare_for_print, INTENT_MAP
     from photolab.config import load_config, config_path, resolve_profile
 
     photo = load(variant_file)
@@ -89,8 +89,13 @@ def pick(
     elif cfg.defaults.paper:
         icc_path, paper_type = resolve_profile(cfg.defaults.paper, cfg)
 
-    actual_intent = intent or cfg.defaults.intent
-    actual_dpi = dpi or cfg.defaults.dpi
+    actual_intent = intent if intent is not None else cfg.defaults.intent
+    actual_dpi = dpi if dpi is not None else cfg.defaults.dpi
+
+    if actual_intent not in INTENT_MAP:
+        valid = ", ".join(sorted(INTENT_MAP))
+        typer.echo(f"Unknown rendering intent {actual_intent!r} — valid intents: {valid}", err=True)
+        raise typer.Exit(2)
 
     typer.echo(f"Preparing {variant_file.name} for print...")
     typer.echo(f"  Paper type: {paper_type}, Intent: {actual_intent}, DPI: {actual_dpi}")
@@ -104,16 +109,20 @@ def pick(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = variant_file.stem
 
-    tiff_path = output_dir / f"{stem}_print.tiff"
-    import cv2
+    # tifffile writes the 16-bit data with DPI and ICC tags in one pass —
+    # a PIL re-save to attach tags would collapse the pixels to 8 bits.
+    import tifffile
     from PIL import Image
-    bgr = cv2.cvtColor(result.print_data, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(str(tiff_path), bgr)
-    img = Image.open(str(tiff_path))
-    save_kwargs = {"dpi": (actual_dpi, actual_dpi)}
+
+    tiff_path = output_dir / f"{stem}_print.tiff"
+    extratags = []
     if result.icc_profile_bytes:
-        save_kwargs["icc_profile"] = result.icc_profile_bytes
-    img.save(str(tiff_path), **save_kwargs)
+        extratags.append((34675, 7, len(result.icc_profile_bytes), result.icc_profile_bytes, True))
+    tifffile.imwrite(
+        str(tiff_path), result.print_data, photometric="rgb",
+        resolution=(actual_dpi, actual_dpi), resolutionunit="INCH",
+        extratags=extratags,
+    )
     typer.echo(f"  Print file: {tiff_path.name}")
 
     proof_path = output_dir / f"{stem}_proof.jpg"
@@ -134,7 +143,6 @@ def compare(
 ) -> None:
     """Generate a contact sheet from a subset of variants."""
     import cv2
-    import numpy as np
     from photolab.correct import Variant
     from photolab.contact_sheet import generate_contact_sheet
 
@@ -164,8 +172,8 @@ def compare(
 def evaluate(
     contact_sheet: Path = typer.Argument(..., help="Contact sheet JPEG to evaluate"),
     original: Optional[Path] = typer.Option(None, help="Original image for context"),
-    output: Path = typer.Option(None, help="Output prescription JSON path"),
-    model: str = typer.Option("claude-sonnet-4-20250514", help="Claude model to use"),
+    output: Optional[Path] = typer.Option(None, help="Output prescription JSON path"),
+    model: str = typer.Option(DEFAULT_EVAL_MODEL, help="Claude model to use"),
 ) -> None:
     """Evaluate a contact sheet and generate a correction prescription."""
     from photolab.evaluate import evaluate_contact_sheet
@@ -191,7 +199,7 @@ def evaluate(
 def refine(
     file: Path = typer.Argument(..., help="Original image file"),
     prescription: Path = typer.Argument(..., help="Prescription JSON from evaluate"),
-    output_dir: Path = typer.Option(None, help="Output directory (default: alongside variants)"),
+    output_dir: Optional[Path] = typer.Option(None, help="Output directory (default: alongside variants)"),
 ) -> None:
     """Generate refined variants from an evaluation prescription."""
     import json
@@ -223,7 +231,14 @@ def refine(
     skipped: list[str] = []
 
     for recipe in recipes:
-        rid = recipe["recipe_id"]
+        rid = recipe.get("recipe_id")
+        # recipe_id comes from model/user-supplied JSON and is used in the
+        # output filename — reject anything that isn't R<number> before it
+        # can walk out of output_dir.
+        if not isinstance(rid, str) or not re.fullmatch(r"R\d+", rid):
+            typer.echo(f"  ✗ invalid recipe_id {rid!r} — must match R<number> — SKIPPED", err=True)
+            skipped.append(repr(rid))
+            continue
         label = recipe.get("label", rid)
         typer.echo(f"  {rid}: {label}")
 
@@ -233,6 +248,10 @@ def refine(
             typer.echo(f"    ✗ {e.result.description} — SKIPPED")
             skipped.append(rid)
             continue
+        except ValueError as e:
+            typer.echo(f"    ✗ {e} — SKIPPED", err=True)
+            skipped.append(rid)
+            continue
 
         for vr in validations:
             mark = "✓" if vr.passed else "✗"
@@ -240,7 +259,9 @@ def refine(
 
         tiff_path = output_dir / f"{source_name}_{rid}.tiff"
         bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(str(tiff_path), bgr)
+        if not cv2.imwrite(str(tiff_path), bgr):
+            typer.echo(f"    ✗ failed to write {tiff_path}", err=True)
+            raise typer.Exit(1)
 
         refined_variants.append(Variant(
             number=int(rid.replace("R", "")),
@@ -296,7 +317,9 @@ def batch(
             sheet_path = image_dir / contact_sheet_filename(source_name)
             sheet.save(str(sheet_path), quality=92)
             typer.echo(f"  Contact sheet: {sheet_path.name}")
-            index_thumbnails.append((source_name, variants[1].data))
+            thumb = next((v for v in variants if v.name == "auto_levels"), variants[0] if variants else None)
+            if thumb is not None:
+                index_thumbnails.append((source_name, thumb.data))
         except Exception as e:
             typer.echo(f"  Error: {e}", err=True)
             continue

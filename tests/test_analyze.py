@@ -1,4 +1,3 @@
-import numpy as np
 import pytest
 from pathlib import Path
 from PIL import ImageCms

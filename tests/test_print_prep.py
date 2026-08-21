@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from pathlib import Path
-from photolab.print_prep import SharpenParams, get_sharpen_params, apply_print_sharpening, compute_print_dimensions, PrintResult, prepare_for_print
+from photolab.print_prep import get_sharpen_params, apply_print_sharpening, compute_print_dimensions, PrintResult, prepare_for_print
 from photolab.loader import PhotoImage
 
 
@@ -52,3 +52,39 @@ class TestPrepareForPrint:
         photo = PhotoImage(data=dark_image_uint16, source_path=Path("/fake/photo.jpg"), source_format="jpeg", bit_depth=8, metadata={}, icc_profile=None)
         result = prepare_for_print(photo=photo, variant_data=dark_image_uint16, paper_type="matte", icc_profile_path=None, intent="perceptual", dpi=300)
         assert max(result.proof_data.shape[:2]) <= 1200
+
+    def test_invalid_intent_raises(self, dark_image_uint16):
+        photo = PhotoImage(data=dark_image_uint16, source_path=Path("/fake/photo.jpg"), source_format="jpeg", bit_depth=8, metadata={}, icc_profile=None)
+        with pytest.raises(ValueError, match="relative-colorimetric"):
+            prepare_for_print(photo=photo, variant_data=dark_image_uint16, paper_type="matte", icc_profile_path=None, intent="saturation", dpi=300)
+
+
+class TestIccPrecision:
+    def _srgb_profile_file(self, tmp_path):
+        from PIL import ImageCms
+        p = tmp_path / "srgb.icc"
+        p.write_bytes(ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes())
+        return p
+
+    def _fine_gradient(self):
+        """16 x 4096 gradient with 4096 distinct 16-bit levels per channel."""
+        ramp = np.linspace(0, 65535, 4096).astype(np.uint16)
+        row = np.stack([ramp, ramp, ramp], axis=-1)
+        return np.tile(row, (16, 1, 1))
+
+    def test_16bit_gradation_survives_icc_conversion(self, tmp_path):
+        data = self._fine_gradient()
+        photo = PhotoImage(data=data, source_path=Path("/fake/photo.tiff"), source_format="tiff", bit_depth=16, metadata={}, icc_profile=None)
+        icc = self._srgb_profile_file(tmp_path)
+        result = prepare_for_print(photo=photo, variant_data=data, paper_type="matte", icc_profile_path=str(icc), intent="perceptual", dpi=300)
+        assert result.icc_profile_bytes is not None  # conversion actually ran
+        # An 8-bit pipeline collapses the gradient to <=256 levels per channel.
+        for ch in range(3):
+            assert len(np.unique(result.print_data[..., ch])) > 256
+
+    def test_embedded_profile_used_as_source(self, tmp_path):
+        data = self._fine_gradient()
+        icc = self._srgb_profile_file(tmp_path)
+        photo = PhotoImage(data=data, source_path=Path("/fake/photo.tiff"), source_format="tiff", bit_depth=16, metadata={}, icc_profile=icc.read_bytes())
+        result = prepare_for_print(photo=photo, variant_data=data, paper_type="matte", icc_profile_path=str(icc), intent="perceptual", dpi=300)
+        assert result.icc_profile_bytes is not None

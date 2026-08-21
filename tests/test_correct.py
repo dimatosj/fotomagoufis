@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 from pathlib import Path
-from photolab.correct import Variant, generate_variants
+from photolab.correct import Variant, generate_variants, save_variants
 from photolab.loader import PhotoImage
 
 
@@ -83,3 +83,17 @@ class TestGenerateVariants:
         for vr in validations:
             assert hasattr(vr, "passed")
             assert hasattr(vr, "adjustment_type")
+
+
+def test_save_variants_write_failure_raises(tmp_path):
+    """A failed image write must raise, not silently report success."""
+    data = np.full((10, 10, 3), 1000, dtype=np.uint16)
+    v = Variant(number=1, name="as_shot", label="As Shot", data=data)
+    ro_dir = tmp_path / "readonly"
+    ro_dir.mkdir()
+    ro_dir.chmod(0o500)
+    try:
+        with pytest.raises(OSError, match="Failed to write"):
+            save_variants([v], "sample", ro_dir)
+    finally:
+        ro_dir.chmod(0o700)

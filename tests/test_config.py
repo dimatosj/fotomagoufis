@@ -1,10 +1,8 @@
 from pathlib import Path
 
-import pytest
-
 from photolab.utils import detect_format, is_raw_format, supported_extensions
 from photolab.config import (
-    PhotoLabConfig, load_config, default_config,
+    load_config, default_config,
     classify_profile, discover_icc_profiles, generate_default_config,
 )
 
@@ -62,7 +60,6 @@ def test_supported_extensions():
 def test_default_config():
     cfg = default_config()
     assert cfg.defaults.dpi == 300
-    assert cfg.defaults.working_space == "prophoto_rgb"
     assert cfg.defaults.paper == "matte"
     assert cfg.defaults.intent == "perceptual"
     assert isinstance(cfg.profiles, dict)
@@ -80,7 +77,6 @@ def test_load_config_from_file(tmp_path):
     config_file.write_text(
         '[defaults]\n'
         'dpi = 600\n'
-        'working_space = "adobe_rgb"\n'
         'paper = "glossy"\n'
         'intent = "relative-colorimetric"\n'
         '\n'
@@ -90,7 +86,6 @@ def test_load_config_from_file(tmp_path):
     )
     cfg = load_config(config_file)
     assert cfg.defaults.dpi == 600
-    assert cfg.defaults.working_space == "adobe_rgb"
     assert cfg.defaults.intent == "relative-colorimetric"
     assert "test_paper" in cfg.profiles
     assert cfg.profiles["test_paper"].path == "/tmp/test.icc"

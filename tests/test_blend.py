@@ -6,7 +6,6 @@ from photolab.blend import (
     soft_mask,
     zone_blend,
     highlight_protect,
-    shadow_protect,
     apply_recipe,
 )
 
@@ -174,6 +173,11 @@ class TestApplyRecipeValidation:
         assert np.array_equal(result, mid_gray)
         assert len(validations) == 0
 
+    def test_unknown_base_variant_raises(self, mid_gray):
+        recipe = {"recipe_id": "R1", "base_variant": "R1", "adjustments": []}
+        with pytest.raises(ValueError, match="base_variant"):
+            apply_recipe(mid_gray, recipe)
+
     def test_failed_validation_raises(self, mid_gray):
         from photolab.validate import AdjustmentFailedError
         recipe = {
@@ -184,3 +188,88 @@ class TestApplyRecipeValidation:
         with pytest.raises(AdjustmentFailedError) as exc_info:
             apply_recipe(mid_gray, recipe)
         assert exc_info.value.recipe_id == "R1"
+
+
+class TestProtectionAdjustments:
+    def _blown_highlights_image(self):
+        """Midtones plus a band of near-blown highlights."""
+        img = np.full((40, 40, 3), 20000, dtype=np.uint16)
+        img[:10] = 62000  # lum ~0.95
+        return img
+
+    def test_highlight_protection_changes_pixels(self):
+        img = self._blown_highlights_image()
+        boost = [{"type": "exposure", "value": 0.5, "strength": 1.0}]
+        protect = boost + [{"type": "highlight_protection", "threshold": 0.75, "strength": 1.0}]
+
+        unprotected, _ = apply_recipe(
+            img, {"recipe_id": "R1", "base_variant": "v1_as_shot", "adjustments": boost}
+        )
+        protected, validations = apply_recipe(
+            img, {"recipe_id": "R2", "base_variant": "v1_as_shot", "adjustments": protect}
+        )
+
+        assert validations[-1].adjustment_type == "highlight_protection"
+        assert validations[-1].passed is True
+        # Protection must measurably change the highlight band...
+        highlight_zone = (slice(0, 10),)
+        assert not np.array_equal(protected[highlight_zone], unprotected[highlight_zone])
+        # ...pulling it back toward the recipe base (62000), away from clipping.
+        assert protected[highlight_zone][..., 0].mean() < unprotected[highlight_zone][..., 0].mean()
+        diff = np.abs(protected[highlight_zone].astype(np.int64) - 62000).mean()
+        blown = np.abs(unprotected[highlight_zone].astype(np.int64) - 62000).mean()
+        assert diff < blown
+
+    def test_conservative_recipe_validates(self):
+        """A gentle shift plus protection must validate — the protection
+        requirement scales to the divergence the shift actually created
+        (a 200K shift moves highlight luminance ~0.4pp; an absolute bar of
+        0.5pp would kill this recipe unfixably)."""
+        img = np.full((30, 30, 3), 60000, dtype=np.uint16)  # lum ~0.92
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [
+                {"type": "color_temp", "value": 200, "strength": 1.0},
+                {"type": "highlight_protection", "threshold": 0.75, "strength": 1.0},
+            ],
+        }
+        _, validations = apply_recipe(img, recipe)
+        assert [v.adjustment_type for v in validations] == ["color_temp", "highlight_protection"]
+        assert all(v.passed for v in validations)
+
+    def test_protection_no_op_recipe_is_rejected(self, mid_gray):
+        # No highlights to protect and nothing adjusted: protection is a no-op
+        # and must fail validation (protections are never retried).
+        from photolab.validate import AdjustmentFailedError
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "highlight_protection", "strength": 0.7}],
+        }
+        with pytest.raises(AdjustmentFailedError):
+            apply_recipe(mid_gray, recipe)
+
+
+class TestColorTempProportionalValidation:
+    def test_small_kelvin_full_strength_validates_without_amplification(self, mid_gray):
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "color_temp", "value": 200, "strength": 1.0}],
+        }
+        _, validations = apply_recipe(mid_gray, recipe)
+        assert validations[0].passed is True
+        # Threshold for 200K @ 1.0 — the doubled 400K retry would be 3.2.
+        assert validations[0].threshold == pytest.approx(1.6)
+
+    def test_large_kelvin_low_strength_validates_without_amplification(self, mid_gray):
+        recipe = {
+            "recipe_id": "R1",
+            "base_variant": "v1_as_shot",
+            "adjustments": [{"type": "color_temp", "value": 500, "strength": 0.3}],
+        }
+        _, validations = apply_recipe(mid_gray, recipe)
+        assert validations[0].passed is True
+        # Threshold for 500K @ 0.3 — the doubled 1000K retry would be 2.4.
+        assert validations[0].threshold == pytest.approx(1.2)

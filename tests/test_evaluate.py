@@ -1,4 +1,3 @@
-import json
 import pytest
 from photolab.evaluate import parse_evaluation_response
 

@@ -98,16 +98,24 @@ def validate_color_temp(before: np.ndarray, after: np.ndarray, adj: dict) -> Val
     """Check per-channel mean shift for color temperature adjustment.
 
     Positive kelvin -> red increases. Negative -> red decreases.
-    Minimum 5% change in primary shifted channel.
+    The threshold is proportional to the requested effect:
+    apply_color_temp_shift scales the primary channel by kelvin/500 * 0.08,
+    blended by strength, so the expected mean shift is
+    |kelvin|/500 * 0.08 * strength * 100 percent. Validation requires at
+    least half of that expectation, with a 0.5% floor.
     """
     zone = adj.get("zone")
     kelvin = adj.get("value", 0)
-    threshold = 5.0
+    strength = adj.get("strength", 1.0)
+    expected_pct = abs(kelvin) / 500.0 * 0.08 * strength * 100.0
+    threshold = max(0.5, 0.5 * expected_pct)
 
-    before_px = _zone_pixels(before, zone)
-    after_px = _zone_pixels(after, zone)
+    # Mask derived once from the before image and reused for both sides —
+    # masking each image independently would let pixels migrate across the
+    # zone boundary and contaminate the measurement.
+    mask = _zone_mask(_luminance(before), zone)
 
-    if len(before_px) == 0 or len(after_px) == 0:
+    if not mask.any():
         return ValidationResult(
             passed=False,
             adjustment_type="color_temp",
@@ -115,6 +123,9 @@ def validate_color_temp(before: np.ndarray, after: np.ndarray, adj: dict) -> Val
             threshold=threshold,
             description=f"no pixels in zone '{zone}'",
         )
+
+    before_px = before.astype(np.float64)[mask]
+    after_px = after.astype(np.float64)[mask]
 
     before_means = before_px.mean(axis=0)  # (3,) R, G, B
     after_means = after_px.mean(axis=0)
@@ -133,7 +144,7 @@ def validate_color_temp(before: np.ndarray, after: np.ndarray, adj: dict) -> Val
     change_pct = abs(after_means[ch_idx] - before_means[ch_idx]) / ref * 100.0
 
     passed = change_pct >= threshold
-    description = f"{ch_name} shift {change_pct:.1f}% (min {threshold}%)"
+    description = f"{ch_name} shift {change_pct:.1f}% (min {threshold:.1f}% for {kelvin:.0f}K @ strength {strength:g})"
 
     return ValidationResult(
         passed=passed,
@@ -297,70 +308,80 @@ def validate_white_patch(before: np.ndarray, after: np.ndarray, adj: dict) -> Va
     )
 
 
-def validate_highlight_protection(before: np.ndarray, after: np.ndarray, adj: dict) -> ValidationResult:
-    """Check that pixels with luminance >0.98 don't increase (clipping check)."""
-    threshold = 0.0
+def _validate_protection(
+    before: np.ndarray, after: np.ndarray, adj: dict, adjustment_type: str,
+    reference: np.ndarray | None = None,
+) -> ValidationResult:
+    """Shared check for the protection adjustments.
+
+    Protection restores the recipe's base image inside the protected tonal
+    zone, so it must produce a measurable luminance change there — a
+    protection that leaves the zone untouched is a no-op and fails.
+    Measured value is the mean absolute luminance change inside the zone in
+    percentage points of full scale.
+
+    Recovery is bounded by what earlier adjustments actually moved in-zone,
+    so when the recipe base is available as `reference`, the requirement
+    scales against that available divergence (half of it, scaled by
+    strength) instead of an absolute bar — a conservative recipe that only
+    nudged the zone is validated against its own expectation. A small
+    absolute floor keeps genuine no-ops failing.
+    """
+    above = adjustment_type == "highlight_protection"
+    strength = adj.get("strength", 1.0)
+    zone_thr = adj.get("threshold", 0.75 if above else 0.25)
+    floor = 0.1
 
     before_lum = _luminance(before)
-    hot_mask = before_lum > 0.98
+    mask = before_lum >= zone_thr if above else before_lum <= zone_thr
+    kind = "above" if above else "below"
 
-    if not hot_mask.any():
+    if not mask.any():
         return ValidationResult(
-            passed=True,
-            adjustment_type="highlight_protection",
+            passed=False,
+            adjustment_type=adjustment_type,
             measured=0.0,
-            threshold=threshold,
-            description="no hot pixels to protect",
+            threshold=floor,
+            description=f"no pixels {kind} luminance {zone_thr:g} to protect",
         )
 
-    before_hot_mean = before_lum[hot_mask].mean()
-    after_lum = _luminance(after)
-    after_hot_mean = after_lum[hot_mask].mean()
+    if reference is not None:
+        available_pct = float(
+            np.abs(before_lum[mask] - _luminance(reference)[mask]).mean()
+        ) * 100.0
+        threshold = max(floor, 0.5 * strength * available_pct)
+    else:
+        threshold = floor
 
-    increase_pct = (after_hot_mean - before_hot_mean) / max(before_hot_mean, 1e-10) * 100.0
-    passed = increase_pct <= threshold
-    description = f"highlight luminance change {increase_pct:.2f}% (must be <= {threshold}%)"
+    after_lum = _luminance(after)
+    change_pct = float(np.abs(after_lum[mask] - before_lum[mask]).mean()) * 100.0
+    passed = change_pct >= threshold
+    zone_name = "highlight" if above else "shadow"
+    description = f"{zone_name} recovery {change_pct:.2f}% (min {threshold:.2f}%)"
 
     return ValidationResult(
         passed=passed,
-        adjustment_type="highlight_protection",
-        measured=increase_pct,
+        adjustment_type=adjustment_type,
+        measured=change_pct,
         threshold=threshold,
         description=description,
     )
 
 
-def validate_shadow_protection(before: np.ndarray, after: np.ndarray, adj: dict) -> ValidationResult:
-    """Check that pixels with luminance <0.02 don't increase."""
-    threshold = 0.0
+def validate_highlight_protection(
+    before: np.ndarray, after: np.ndarray, adj: dict,
+    reference: np.ndarray | None = None,
+) -> ValidationResult:
+    """Require measurable recovery in the highlight zone — a no-op fails."""
+    return _validate_protection(before, after, adj, "highlight_protection", reference)
 
-    before_lum = _luminance(before)
-    dark_mask = before_lum < 0.02
 
-    if not dark_mask.any():
-        return ValidationResult(
-            passed=True,
-            adjustment_type="shadow_protection",
-            measured=0.0,
-            threshold=threshold,
-            description="no dark pixels to protect",
-        )
-
-    before_dark_mean = before_lum[dark_mask].mean()
-    after_lum = _luminance(after)
-    after_dark_mean = after_lum[dark_mask].mean()
-
-    increase_pct = (after_dark_mean - before_dark_mean) / max(before_dark_mean, 1e-10) * 100.0
-    passed = increase_pct <= threshold
-    description = f"shadow luminance change {increase_pct:.2f}% (must be <= {threshold}%)"
-
-    return ValidationResult(
-        passed=passed,
-        adjustment_type="shadow_protection",
-        measured=increase_pct,
-        threshold=threshold,
-        description=description,
-    )
+def validate_shadow_protection(
+    before: np.ndarray, after: np.ndarray, adj: dict,
+    reference: np.ndarray | None = None,
+) -> ValidationResult:
+    """Require measurable recovery in the shadow zone — a no-op fails."""
+    return _validate_protection(before, after, adj, "shadow_protection", reference)
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +404,20 @@ STRENGTH_ADJUSTMENTS = {"clahe", "auto_levels", "gray_world", "white_patch"}
 NO_RETRY_ADJUSTMENTS = {"highlight_protection", "shadow_protection"}
 
 
-def validate_adjustment(before: np.ndarray, after: np.ndarray, adj: dict) -> ValidationResult:
-    """Dispatch to the right validator by adj["type"]. Unknown types pass by default."""
+def validate_adjustment(
+    before: np.ndarray, after: np.ndarray, adj: dict,
+    reference: np.ndarray | None = None,
+) -> ValidationResult:
+    """Dispatch to the right validator by adj["type"]. Unknown types pass by default.
+
+    `reference` (the recipe's base image) is used only by the protection
+    validators, to scale their requirement to the available divergence.
+    """
     adj_type = adj.get("type", "unknown")
+
+    if adj_type in ("highlight_protection", "shadow_protection"):
+        return _validate_protection(before, after, adj, adj_type, reference)
+
     validator = VALIDATORS.get(adj_type)
 
     if validator is None:

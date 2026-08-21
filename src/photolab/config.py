@@ -1,3 +1,5 @@
+import os
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +14,6 @@ class ProfileConfig:
 @dataclass
 class DefaultsConfig:
     dpi: int = 300
-    working_space: str = "prophoto_rgb"
     paper: str = "matte"
     intent: str = "perceptual"
 
@@ -21,10 +22,6 @@ class DefaultsConfig:
 class PhotoLabConfig:
     defaults: DefaultsConfig = field(default_factory=DefaultsConfig)
     profiles: dict[str, ProfileConfig] = field(default_factory=dict)
-
-
-import os
-import sys
 
 
 def _icc_scan_dirs() -> list[Path]:
@@ -122,7 +119,6 @@ def load_config(path: Path) -> PhotoLabConfig:
     defaults_raw = raw.get("defaults", {})
     defaults = DefaultsConfig(
         dpi=defaults_raw.get("dpi", 300),
-        working_space=defaults_raw.get("working_space", "prophoto_rgb"),
         paper=defaults_raw.get("paper", "matte"),
         intent=defaults_raw.get("intent", "perceptual"),
     )

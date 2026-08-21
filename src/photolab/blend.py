@@ -138,22 +138,30 @@ ADJUSTMENT_FNS = {
 
 
 def _apply_single_adjustment(
-    result: np.ndarray, adj: dict
+    result: np.ndarray, adj: dict, reference: np.ndarray | None = None
 ) -> np.ndarray:
-    """Apply one adjustment to result and return the new image."""
+    """Apply one adjustment to result and return the new image.
+
+    For the protection types, `reference` is the recipe's base image (before
+    any adjustments): protection restores the reference in the protected
+    tonal zone by `strength`, undoing what earlier adjustments did there.
+    """
     adj_type = adj["type"]
     strength = adj.get("strength", 1.0)
     value = adj.get("value", 0.0)
     zone = adj.get("zone")
 
-    if adj_type == "highlight_protection":
-        threshold = adj.get("threshold", 0.75)
-        corrected = result.copy()
-        return highlight_protect(result, corrected, strength, threshold)
-    elif adj_type == "shadow_protection":
-        threshold = adj.get("threshold", 0.25)
-        corrected = result.copy()
-        return shadow_protect(result, corrected, strength, threshold)
+    if adj_type in ("highlight_protection", "shadow_protection"):
+        if reference is None:
+            return result
+        above = adj_type == "highlight_protection"
+        threshold = adj.get("threshold", 0.75 if above else 0.25)
+        lum = luminance(reference)
+        mask = soft_mask(lum, threshold, 0.05, above=above)[:, :, np.newaxis] * strength
+        r = result.astype(np.float64)
+        ref = reference.astype(np.float64)
+        out = r * (1.0 - mask) + ref * mask
+        return np.clip(out, 0, UINT16_MAX).astype(np.uint16)
     elif adj_type in ADJUSTMENT_FNS:
         corrected = ADJUSTMENT_FNS[adj_type](result, value)
         return zone_blend(result, corrected, strength, zone)
@@ -174,17 +182,24 @@ def apply_recipe(
     from photolab.validate import validate_adjustment, amplify_adjustment, AdjustmentFailedError
 
     base_name = recipe.get("base_variant", "v1_as_shot")
-    base_fn = BASE_CORRECTIONS.get(base_name, BASE_CORRECTIONS["v1_as_shot"])
+    base_fn = BASE_CORRECTIONS.get(base_name)
+    if base_fn is None:
+        valid = ", ".join(BASE_CORRECTIONS)
+        raise ValueError(
+            f"Unknown base_variant {base_name!r} — recipes always start from the "
+            f"original image, so the base must be one of: {valid}"
+        )
     result = base_fn(original)
+    reference = result.copy()  # recipe base — what the protections restore toward
     recipe_id = recipe.get("recipe_id", "?")
 
     validations: list = []
 
     for adj in recipe.get("adjustments", []):
         before = result.copy()
-        result = _apply_single_adjustment(result, adj)
+        result = _apply_single_adjustment(result, adj, reference)
 
-        vr = validate_adjustment(before, result, adj)
+        vr = validate_adjustment(before, result, adj, reference)
         if vr.passed:
             validations.append(vr)
             continue
@@ -194,8 +209,8 @@ def apply_recipe(
         if amplified is None:
             raise AdjustmentFailedError(recipe_id, adj, vr)
 
-        result = _apply_single_adjustment(before, amplified)
-        vr2 = validate_adjustment(before, result, amplified)
+        result = _apply_single_adjustment(before, amplified, reference)
+        vr2 = validate_adjustment(before, result, amplified, reference)
         if vr2.passed:
             validations.append(vr2)
         else:
